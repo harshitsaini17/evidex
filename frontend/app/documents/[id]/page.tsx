@@ -36,7 +36,7 @@ export default function DocumentReaderPage() {
   };
 
   const handleSectionSelect = (section: SectionSummary) => {
-    console.log("Selected section:", section.section_title);
+    console.log("Selected section:", section.title);
     // TODO: Implement scroll to section / highlight paragraphs
   };
 

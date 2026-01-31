@@ -6,6 +6,7 @@ the Evidex API. Safe to import without side effects.
 """
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from evidex.api.routers import health
 from evidex.api import routes
@@ -22,6 +23,18 @@ def create_app() -> FastAPI:
         title="Evidex API",
         description="Research paper Q&A system with strict citation requirements",
         version="0.1.0",
+    )
+    
+    # Configure CORS for frontend access
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
     
     # Include routers

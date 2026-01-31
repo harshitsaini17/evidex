@@ -9,8 +9,13 @@ export interface DocumentInfo {
 }
 
 export interface SectionSummary {
-  section_title: string;
+  title: string;
   paragraph_ids: string[];
+}
+
+export interface SectionsResponse {
+  document_id: string;
+  sections: SectionSummary[];
 }
 
 export interface Paragraph {

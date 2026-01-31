@@ -33,7 +33,7 @@ export default function DocumentsPage() {
       const formData = new FormData();
       formData.append("file", file);
 
-      await apiClient.post("/upload", formData, {
+      await apiClient.post("/documents/upload", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 

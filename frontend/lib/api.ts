@@ -79,10 +79,10 @@ export async function fetchDocuments(): Promise<DocumentInfo[]> {
  */
 export async function fetchSections(documentId: string): Promise<SectionSummary[]> {
   try {
-    const response = await apiClient.get<SectionSummary[]>(
+    const response = await apiClient.get<{ document_id: string; sections: SectionSummary[] }>(
       `/documents/${documentId}/sections`
     );
-    return response.data;
+    return response.data.sections;
   } catch (error) {
     throw new Error(extractErrorMessage(error));
   }
