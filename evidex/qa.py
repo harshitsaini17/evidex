@@ -77,6 +77,7 @@ def explain_question(
     paragraph_ids: list[str],
     question: str,
     llm: LLMInterface,
+    include_debug: bool = False,
 ) -> dict:
     """Answer a question using only specified paragraphs from a document.
     
@@ -92,12 +93,14 @@ def explain_question(
         paragraph_ids: List of paragraph IDs to use as context
         question: The question to answer
         llm: The LLM interface to use for generation
+        include_debug: If True, include debug info in response (default: False)
         
     Returns:
         Dict with keys:
         - answer: The answer string
         - citations: List of paragraph IDs used
         - confidence: "high" or "low"
+        - debug (optional): Dict with planner_reason and verifier_reason
         
     Raises:
         ValueError: If no valid paragraphs found or LLM response invalid
@@ -111,6 +114,7 @@ def explain_question(
         "paragraph_ids": paragraph_ids,
         "question": question,
         "llm": llm,
+        "include_debug": include_debug,
     }
     
     # Execute the graph

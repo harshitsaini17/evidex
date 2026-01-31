@@ -174,14 +174,14 @@ class GroqLLM(LLMInterface):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "llama3-70b-8192",
+        model: str = "llama-3.3-70b-versatile",
         temperature: float = 0.0,
     ):
         """Initialize the Groq LLM.
         
         Args:
             api_key: Groq API key (falls back to GROQ_API_KEY env var)
-            model: Model to use (default: llama3-70b-8192)
+            model: Model to use (default: llama-3.3-70b-versatile)
             temperature: Sampling temperature (0.0 for deterministic)
         """
         import os

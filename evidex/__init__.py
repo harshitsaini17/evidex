@@ -10,6 +10,8 @@ from evidex.qa import explain_question
 from evidex.llm import LLMInterface, MockLLM, GroqLLM
 from evidex.graph import (
     QAState,
+    planner_node,
+    extract_keywords,
     retrieve_paragraphs_node,
     explain_node,
     verifier_node,
@@ -38,6 +40,8 @@ __all__ = [
     "GroqLLM",
     # LangGraph components
     "QAState",
+    "planner_node",
+    "extract_keywords",
     "retrieve_paragraphs_node",
     "explain_node",
     "verifier_node",
