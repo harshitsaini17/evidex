@@ -145,8 +145,16 @@ def parse_llm_response(response: LLMResponse) -> dict:
     except json.JSONDecodeError:
         pass
     
-    # Try to find JSON in the response
-    json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
+    # Try to find JSON in the response (handle nested braces for citations array)
+    json_match = re.search(r'\{[^{}]*"answer"[^{}]*\}', content, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group())
+        except json.JSONDecodeError:
+            pass
+    
+    # Try to find any JSON object with more lenient matching
+    json_match = re.search(r'\{.*?"answer".*?"citations".*?"confidence".*?\}', content, re.DOTALL)
     if json_match:
         try:
             return json.loads(json_match.group())
@@ -155,3 +163,69 @@ def parse_llm_response(response: LLMResponse) -> dict:
     
     # If all parsing fails, raise error
     raise ValueError(f"Could not parse LLM response as JSON: {content[:200]}")
+
+
+class GroqLLM(LLMInterface):
+    """Groq LLM implementation using their API.
+    
+    Uses the Groq API for fast inference with models like Llama.
+    """
+    
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "llama3-70b-8192",
+        temperature: float = 0.0,
+    ):
+        """Initialize the Groq LLM.
+        
+        Args:
+            api_key: Groq API key (falls back to GROQ_API_KEY env var)
+            model: Model to use (default: llama3-70b-8192)
+            temperature: Sampling temperature (0.0 for deterministic)
+        """
+        import os
+        from groq import Groq
+        
+        self.api_key = api_key or os.environ.get("GROQ_API_KEY")
+        if not self.api_key:
+            raise ValueError("Groq API key required. Set GROQ_API_KEY or pass api_key.")
+        
+        self.model = model
+        self.temperature = temperature
+        self.client = Groq(api_key=self.api_key)
+        self.call_history: list[str] = []
+    
+    def generate(self, prompt: str) -> LLMResponse:
+        """Generate a response using the Groq API.
+        
+        Args:
+            prompt: The full prompt to send
+            
+        Returns:
+            LLMResponse containing the generated text
+        """
+        self.call_history.append(prompt)
+        
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            temperature=self.temperature,
+            max_tokens=1024,
+        )
+        
+        content = response.choices[0].message.content
+        
+        return LLMResponse(
+            content=content,
+            raw={
+                "model": response.model,
+                "usage": {
+                    "prompt_tokens": response.usage.prompt_tokens,
+                    "completion_tokens": response.usage.completion_tokens,
+                    "total_tokens": response.usage.total_tokens,
+                },
+            }
+        )

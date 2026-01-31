@@ -7,7 +7,7 @@ with strict citation requirements and no external knowledge.
 
 from evidex.models import Paragraph, Section, Document, QAResponse
 from evidex.qa import explain_question
-from evidex.llm import LLMInterface, MockLLM
+from evidex.llm import LLMInterface, MockLLM, GroqLLM
 from evidex.graph import (
     QAState,
     retrieve_paragraphs_node,
@@ -16,6 +16,12 @@ from evidex.graph import (
     create_qa_graph,
     qa_graph,
     explain_question_graph,
+)
+from evidex.ingest import (
+    parse_pdf_to_document,
+    extract_text_from_pdf,
+    get_all_paragraph_ids,
+    search_paragraphs,
 )
 
 __all__ = [
@@ -29,6 +35,7 @@ __all__ = [
     # LLM
     "LLMInterface",
     "MockLLM",
+    "GroqLLM",
     # LangGraph components
     "QAState",
     "retrieve_paragraphs_node",
@@ -37,4 +44,9 @@ __all__ = [
     "create_qa_graph",
     "qa_graph",
     "explain_question_graph",
+    # Ingestion
+    "parse_pdf_to_document",
+    "extract_text_from_pdf",
+    "get_all_paragraph_ids",
+    "search_paragraphs",
 ]
