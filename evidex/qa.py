@@ -80,11 +80,12 @@ def explain_question(
 ) -> dict:
     """Answer a question using only specified paragraphs from a document.
     
-    This function:
-    1. Retrieves the specified paragraphs from the document
-    2. Builds a strict prompt forbidding external knowledge
-    3. Sends to the LLM and parses the response
-    4. Returns a structured response with citations
+    This function uses the LangGraph workflow internally to:
+    1. Retrieve the specified paragraphs from the document
+    2. Build a strict prompt forbidding external knowledge
+    3. Send to the LLM and parse the response
+    4. Verify the response is grounded in the provided paragraphs
+    5. Return a structured response with citations
     
     Args:
         document: The Document to query
@@ -101,40 +102,19 @@ def explain_question(
     Raises:
         ValueError: If no valid paragraphs found or LLM response invalid
     """
-    # Retrieve the specified paragraphs
-    paragraphs = document.get_paragraphs(paragraph_ids)
+    # Import here to avoid circular imports
+    from evidex.graph import qa_graph
     
-    if not paragraphs:
-        return {
-            "answer": "Not defined in the paper",
-            "citations": [],
-            "confidence": "high",
-        }
-    
-    # Build context and prompt
-    context = build_context_block(paragraphs)
-    prompt = build_prompt(context, question)
-    
-    # Get LLM response
-    response = llm.generate(prompt)
-    
-    # Parse and validate response
-    parsed = parse_llm_response(response)
-    
-    # Validate citations - only include citations that match provided paragraph IDs
-    valid_paragraph_ids = {p.paragraph_id for p in paragraphs}
-    valid_citations = [
-        cid for cid in parsed.get("citations", [])
-        if cid in valid_paragraph_ids
-    ]
-    
-    # Validate confidence value
-    confidence = parsed.get("confidence", "low")
-    if confidence not in ("high", "low"):
-        confidence = "low"
-    
-    return {
-        "answer": parsed.get("answer", "Not defined in the paper"),
-        "citations": valid_citations,
-        "confidence": confidence,
+    # Initialize graph state
+    initial_state = {
+        "document": document,
+        "paragraph_ids": paragraph_ids,
+        "question": question,
+        "llm": llm,
     }
+    
+    # Execute the graph
+    result = qa_graph.invoke(initial_state)
+    
+    # Return the final response
+    return result["final_response"]

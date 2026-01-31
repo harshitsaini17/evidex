@@ -29,6 +29,7 @@ class QAState(TypedDict, total=False):
         paragraphs: Retrieved paragraphs (set by retrieve_paragraphs_node)
         llm_response: Raw LLM response (set by explain_node)
         final_response: Final structured response dict (set by explain_node)
+        verification_passed: Whether the response passed verification (set by verifier_node)
     """
     # Inputs
     document: Document
@@ -42,6 +43,7 @@ class QAState(TypedDict, total=False):
     
     # Output
     final_response: dict
+    verification_passed: bool
 
 
 # =============================================================================
@@ -132,6 +134,66 @@ def explain_node(state: QAState) -> dict:
     }
 
 
+def verifier_node(state: QAState) -> dict:
+    """Verify that the response is grounded in the provided paragraphs.
+    
+    This node enforces hallucination control by verifying:
+    1. If answer != "Not defined in the paper", citations must be non-empty
+    2. All citations must exist in the provided paragraph_ids
+    
+    If verification fails, the response is overridden to reject the answer.
+    
+    Args:
+        state: Current workflow state with final_response and paragraphs
+        
+    Returns:
+        Dict with 'final_response' and 'verification_passed' keys
+    """
+    final_response = state["final_response"]
+    paragraphs = state["paragraphs"]
+    
+    answer = final_response.get("answer", "")
+    citations = final_response.get("citations", [])
+    
+    # Get valid paragraph IDs from the retrieved paragraphs
+    valid_paragraph_ids = {p.paragraph_id for p in paragraphs}
+    
+    # Check 1: If answer is NOT "Not defined in the paper", citations must be non-empty
+    is_not_defined = answer == "Not defined in the paper"
+    has_citations = len(citations) > 0
+    
+    if not is_not_defined and not has_citations:
+        # Answer claims to have information but provides no citations
+        return {
+            "final_response": {
+                "answer": "Not defined in the paper",
+                "citations": [],
+                "confidence": "low",
+            },
+            "verification_passed": False,
+        }
+    
+    # Check 2: All citations must exist in the provided paragraph_ids
+    invalid_citations = [cid for cid in citations if cid not in valid_paragraph_ids]
+    
+    if invalid_citations:
+        # Some citations reference paragraphs not in the provided context
+        return {
+            "final_response": {
+                "answer": "Not defined in the paper",
+                "citations": [],
+                "confidence": "low",
+            },
+            "verification_passed": False,
+        }
+    
+    # Verification passed
+    return {
+        "final_response": final_response,
+        "verification_passed": True,
+    }
+
+
 # =============================================================================
 # Graph Construction
 # =============================================================================
@@ -139,11 +201,12 @@ def explain_node(state: QAState) -> dict:
 def create_qa_graph() -> StateGraph:
     """Create the Q&A workflow graph.
     
-    The graph has two nodes:
+    The graph has three nodes:
     1. retrieve_paragraphs: Fetches paragraphs from document
     2. explain: Generates answer using LLM
+    3. verify: Validates response is grounded in provided paragraphs
     
-    Flow: START -> retrieve_paragraphs -> explain -> END
+    Flow: START -> retrieve_paragraphs -> explain -> verify -> END
     
     Returns:
         Compiled StateGraph ready for execution
@@ -154,11 +217,13 @@ def create_qa_graph() -> StateGraph:
     # Add nodes
     builder.add_node("retrieve_paragraphs", retrieve_paragraphs_node)
     builder.add_node("explain", explain_node)
+    builder.add_node("verify", verifier_node)
     
     # Define the flow
     builder.add_edge(START, "retrieve_paragraphs")
     builder.add_edge("retrieve_paragraphs", "explain")
-    builder.add_edge("explain", END)
+    builder.add_edge("explain", "verify")
+    builder.add_edge("verify", END)
     
     # Compile and return
     return builder.compile()

@@ -13,6 +13,7 @@ from evidex.graph import (
     QAState,
     retrieve_paragraphs_node,
     explain_node,
+    verifier_node,
     create_qa_graph,
     explain_question_graph,
 )
@@ -336,6 +337,198 @@ class TestGraphIdenticalBehavior:
         
         assert graph_result == original_result
         assert graph_result["confidence"] == "low"
+
+
+# =============================================================================
+# Verifier Node Tests
+# =============================================================================
+
+class TestVerifierNode:
+    """Tests for the verifier_node function."""
+    
+    def test_passes_valid_response_with_citations(self, sample_document: Document):
+        """Test that valid response with citations passes verification."""
+        paragraphs = sample_document.get_paragraphs(["s1_p1"])
+        state: QAState = {
+            "document": sample_document,
+            "paragraph_ids": ["s1_p1"],
+            "question": "test",
+            "llm": MockLLM(),
+            "paragraphs": paragraphs,
+            "llm_response": None,
+            "final_response": {
+                "answer": "Neural networks are computational models.",
+                "citations": ["s1_p1"],
+                "confidence": "high",
+            },
+        }
+        
+        result = verifier_node(state)
+        
+        assert result["verification_passed"] is True
+        assert result["final_response"]["answer"] == "Neural networks are computational models."
+        assert result["final_response"]["citations"] == ["s1_p1"]
+    
+    def test_passes_not_defined_response_without_citations(self, sample_document: Document):
+        """Test that 'Not defined' response without citations passes."""
+        paragraphs = sample_document.get_paragraphs(["s1_p1"])
+        state: QAState = {
+            "document": sample_document,
+            "paragraph_ids": ["s1_p1"],
+            "question": "test",
+            "llm": MockLLM(),
+            "paragraphs": paragraphs,
+            "llm_response": None,
+            "final_response": {
+                "answer": "Not defined in the paper",
+                "citations": [],
+                "confidence": "high",
+            },
+        }
+        
+        result = verifier_node(state)
+        
+        assert result["verification_passed"] is True
+        assert result["final_response"]["answer"] == "Not defined in the paper"
+    
+    def test_rejects_answer_without_citations(self, sample_document: Document):
+        """Test that answer claiming information but no citations is rejected."""
+        paragraphs = sample_document.get_paragraphs(["s1_p1"])
+        state: QAState = {
+            "document": sample_document,
+            "paragraph_ids": ["s1_p1"],
+            "question": "test",
+            "llm": MockLLM(),
+            "paragraphs": paragraphs,
+            "llm_response": None,
+            "final_response": {
+                "answer": "Neural networks use backpropagation.",  # Claims info
+                "citations": [],  # But no citations!
+                "confidence": "high",
+            },
+        }
+        
+        result = verifier_node(state)
+        
+        assert result["verification_passed"] is False
+        assert result["final_response"]["answer"] == "Not defined in the paper"
+        assert result["final_response"]["citations"] == []
+        assert result["final_response"]["confidence"] == "low"
+    
+    def test_rejects_invalid_citations(self, sample_document: Document):
+        """Test that citations not in provided paragraphs are rejected."""
+        paragraphs = sample_document.get_paragraphs(["s1_p1"])
+        state: QAState = {
+            "document": sample_document,
+            "paragraph_ids": ["s1_p1"],
+            "question": "test",
+            "llm": MockLLM(),
+            "paragraphs": paragraphs,
+            "llm_response": None,
+            "final_response": {
+                "answer": "Some answer",
+                "citations": ["s1_p1", "s2_p1"],  # s2_p1 not in provided paragraphs
+                "confidence": "high",
+            },
+        }
+        
+        result = verifier_node(state)
+        
+        assert result["verification_passed"] is False
+        assert result["final_response"]["answer"] == "Not defined in the paper"
+        assert result["final_response"]["confidence"] == "low"
+    
+    def test_rejects_hallucinated_citations(self, sample_document: Document):
+        """Test that completely hallucinated citations are rejected."""
+        paragraphs = sample_document.get_paragraphs(["s1_p1"])
+        state: QAState = {
+            "document": sample_document,
+            "paragraph_ids": ["s1_p1"],
+            "question": "test",
+            "llm": MockLLM(),
+            "paragraphs": paragraphs,
+            "llm_response": None,
+            "final_response": {
+                "answer": "Some answer",
+                "citations": ["nonexistent_paragraph"],  # Completely made up
+                "confidence": "high",
+            },
+        }
+        
+        result = verifier_node(state)
+        
+        assert result["verification_passed"] is False
+        assert result["final_response"]["answer"] == "Not defined in the paper"
+
+
+class TestVerifierIntegration:
+    """Integration tests verifying the verifier is enforced in the full graph."""
+    
+    def test_graph_rejects_ungrounded_answer(self, sample_document: Document):
+        """Test that the full graph rejects answers without citations."""
+        # LLM returns answer but no citations
+        mock_llm = MockLLM(
+            default_response=MockLLM.create_response(
+                answer="Neural networks are amazing!",
+                citations=[],  # No citations provided
+                confidence="high"
+            )
+        )
+        
+        result = explain_question_graph(
+            document=sample_document,
+            paragraph_ids=["s1_p1"],
+            question="What are neural networks?",
+            llm=mock_llm
+        )
+        
+        # Verifier should have rejected this
+        assert result["answer"] == "Not defined in the paper"
+        assert result["citations"] == []
+        assert result["confidence"] == "low"
+    
+    def test_graph_accepts_grounded_answer(self, sample_document: Document):
+        """Test that the full graph accepts properly grounded answers."""
+        mock_llm = MockLLM(
+            default_response=MockLLM.create_response(
+                answer="Neural networks are computational models inspired by biological neurons.",
+                citations=["s1_p1"],
+                confidence="high"
+            )
+        )
+        
+        result = explain_question_graph(
+            document=sample_document,
+            paragraph_ids=["s1_p1"],
+            question="What are neural networks?",
+            llm=mock_llm
+        )
+        
+        # Should pass verification
+        assert result["answer"] == "Neural networks are computational models inspired by biological neurons."
+        assert result["citations"] == ["s1_p1"]
+        assert result["confidence"] == "high"
+    
+    def test_graph_accepts_not_defined_answer(self, sample_document: Document):
+        """Test that 'Not defined' answers pass verification."""
+        mock_llm = MockLLM(
+            default_response=MockLLM.create_response(
+                answer="Not defined in the paper",
+                citations=[],
+                confidence="high"
+            )
+        )
+        
+        result = explain_question_graph(
+            document=sample_document,
+            paragraph_ids=["s1_p1"],
+            question="What is the learning rate?",
+            llm=mock_llm
+        )
+        
+        assert result["answer"] == "Not defined in the paper"
+        assert result["citations"] == []
+        assert result["confidence"] == "high"
 
 
 # =============================================================================
