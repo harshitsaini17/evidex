@@ -198,12 +198,48 @@ def parse_pdf_to_document(
     # Create document
     doc = Document(title=title, sections=sections)
     
+    # Validate unique paragraph IDs
+    validate_unique_ids(doc)
+    
     # Extract equations if requested
     if extract_equations:
         equations = extract_equations_from_document(doc)
         doc.equations = equations
+        # Re-validate after adding equations
+        validate_unique_ids(doc)
     
     return doc
+
+
+def validate_unique_ids(document: Document) -> None:
+    """Validate that all paragraph and equation IDs are unique.
+    
+    Args:
+        document: Document to validate
+        
+    Raises:
+        ValueError: If duplicate IDs are found
+    """
+    seen_ids: set[str] = set()
+    duplicates: list[str] = []
+    
+    # Check paragraph IDs
+    for section in document.sections:
+        for para in section.paragraphs:
+            if para.paragraph_id in seen_ids:
+                duplicates.append(f"paragraph:{para.paragraph_id}")
+            seen_ids.add(para.paragraph_id)
+    
+    # Check equation IDs
+    for eq in document.equations:
+        if eq.equation_id in seen_ids:
+            duplicates.append(f"equation:{eq.equation_id}")
+        seen_ids.add(eq.equation_id)
+    
+    if duplicates:
+        raise ValueError(
+            f"Duplicate IDs found in document '{document.title}': {duplicates}"
+        )
 
 
 def get_all_paragraph_ids(document: Document) -> list[str]:

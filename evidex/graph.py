@@ -696,14 +696,15 @@ JSON Response:"""
 def parse_composer_response(response) -> dict:
     """Parse the composer LLM response.
     
+    Uses robust JSON extraction to handle various LLM output formats.
+    
     Args:
         response: LLM response (LLMResponse or str)
         
     Returns:
         Dict with 'composed_explanation' and 'sentences' keys
     """
-    import json
-    import re
+    from evidex.llm import safe_parse_json
     
     # Get text from response
     if hasattr(response, 'content'):
@@ -711,38 +712,37 @@ def parse_composer_response(response) -> dict:
     else:
         text = str(response)
     
-    # Try to extract JSON from the response
-    # Handle markdown code blocks
-    if '```json' in text:
-        match = re.search(r'```json\s*\n?(.*?)\n?```', text, re.DOTALL)
-        if match:
-            text = match.group(1)
-    elif '```' in text:
-        match = re.search(r'```\s*\n?(.*?)\n?```', text, re.DOTALL)
-        if match:
-            text = match.group(1)
-    
-    # Find JSON object in text
-    text = text.strip()
-    start = text.find('{')
-    end = text.rfind('}') + 1
-    
-    if start >= 0 and end > start:
-        json_str = text[start:end]
-        try:
-            parsed = json.loads(json_str)
-            return {
-                "composed_explanation": parsed.get("composed_explanation", ""),
-                "sentences": parsed.get("sentences", []),
-            }
-        except json.JSONDecodeError:
-            pass
-    
-    # Fallback: return empty
-    return {
-        "composed_explanation": "",
-        "sentences": [],
-    }
+    try:
+        parsed = safe_parse_json(text)
+        
+        # Validate required structure
+        composed = parsed.get("composed_explanation", "")
+        sentences = parsed.get("sentences", [])
+        
+        # Validate sentences structure
+        if not isinstance(sentences, list):
+            return {"composed_explanation": composed, "sentences": []}
+        
+        # Validate each sentence has required fields
+        valid_sentences = []
+        for sent in sentences:
+            if isinstance(sent, dict) and "text" in sent and "citation" in sent:
+                valid_sentences.append({
+                    "text": str(sent["text"]),
+                    "citation": str(sent["citation"]),
+                })
+        
+        return {
+            "composed_explanation": str(composed) if composed else "",
+            "sentences": valid_sentences,
+        }
+        
+    except ValueError:
+        # JSON parsing failed - return empty structure
+        return {
+            "composed_explanation": "",
+            "sentences": [],
+        }
 
 
 def verify_composed_explanation(

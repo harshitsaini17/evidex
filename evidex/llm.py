@@ -8,7 +8,118 @@ implementation for testing without external API calls.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import json
+import logging
 import re
+
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# JSON Extraction Helpers
+# =============================================================================
+
+def extract_json_block(text: str) -> str:
+    """Extract first balanced JSON object from text using stack-based parsing.
+    
+    This is more robust than regex for nested JSON structures like
+    objects containing arrays.
+    
+    Args:
+        text: Text potentially containing a JSON object
+        
+    Returns:
+        Extracted JSON substring
+        
+    Raises:
+        ValueError: If no valid JSON object found
+    """
+    start = text.find('{')
+    if start == -1:
+        raise ValueError("No JSON object found in text")
+    
+    stack = []
+    in_string = False
+    escape_next = False
+    
+    for i in range(start, len(text)):
+        ch = text[i]
+        
+        # Handle escape sequences in strings
+        if escape_next:
+            escape_next = False
+            continue
+        
+        if ch == '\\':
+            escape_next = True
+            continue
+        
+        # Handle string boundaries
+        if ch == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        
+        # Only count braces outside strings
+        if not in_string:
+            if ch == '{':
+                stack.append('{')
+            elif ch == '}':
+                if not stack:
+                    raise ValueError("Unbalanced JSON braces - extra closing brace")
+                stack.pop()
+                if not stack:
+                    return text[start:i+1]
+    
+    raise ValueError("Unbalanced JSON braces - unclosed object")
+
+
+def safe_parse_json(content: str) -> dict:
+    """Parse JSON from LLM response with fallback to extraction.
+    
+    Tries direct parsing first, then falls back to extracting
+    the first balanced JSON block if the content contains extra text.
+    
+    Args:
+        content: LLM response content
+        
+    Returns:
+        Parsed dict
+        
+    Raises:
+        ValueError: If no valid JSON can be extracted
+    """
+    content = content.strip()
+    
+    # Try direct parse first (fastest path)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+    
+    # Handle markdown code blocks
+    if '```json' in content:
+        match = re.search(r'```json\s*\n?(.*?)\n?```', content, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1).strip())
+            except json.JSONDecodeError:
+                pass
+    elif '```' in content:
+        match = re.search(r'```\s*\n?(.*?)\n?```', content, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1).strip())
+            except json.JSONDecodeError:
+                pass
+    
+    # Fall back to balanced-braces extraction
+    try:
+        json_str = extract_json_block(content)
+        return json.loads(json_str)
+    except (ValueError, json.JSONDecodeError) as e:
+        raise ValueError(
+            f"Could not parse LLM response as JSON: {content[:200]}... "
+            f"Error: {e}"
+        )
 
 
 @dataclass
@@ -125,8 +236,11 @@ class MockLLM(LLMInterface):
 def parse_llm_response(response: LLMResponse) -> dict:
     """Parse LLM response into structured format.
     
-    Attempts to extract JSON from the response, handling cases where
-    the JSON might be embedded in other text.
+    Uses robust JSON extraction that handles:
+    - Direct JSON responses
+    - JSON wrapped in markdown code blocks
+    - JSON embedded in explanatory text
+    - Nested structures (objects with arrays)
     
     Args:
         response: The raw LLM response
@@ -137,32 +251,7 @@ def parse_llm_response(response: LLMResponse) -> dict:
     Raises:
         ValueError: If response cannot be parsed
     """
-    content = response.content.strip()
-    
-    # Try direct JSON parse first
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        pass
-    
-    # Try to find JSON in the response (handle nested braces for citations array)
-    json_match = re.search(r'\{[^{}]*"answer"[^{}]*\}', content, re.DOTALL)
-    if json_match:
-        try:
-            return json.loads(json_match.group())
-        except json.JSONDecodeError:
-            pass
-    
-    # Try to find any JSON object with more lenient matching
-    json_match = re.search(r'\{.*?"answer".*?"citations".*?"confidence".*?\}', content, re.DOTALL)
-    if json_match:
-        try:
-            return json.loads(json_match.group())
-        except json.JSONDecodeError:
-            pass
-    
-    # If all parsing fails, raise error
-    raise ValueError(f"Could not parse LLM response as JSON: {content[:200]}")
+    return safe_parse_json(response.content)
 
 
 class GroqLLM(LLMInterface):
@@ -176,6 +265,7 @@ class GroqLLM(LLMInterface):
         api_key: str | None = None,
         model: str = "llama-3.3-70b-versatile",
         temperature: float = 0.0,
+        timeout: float | None = None,
     ):
         """Initialize the Groq LLM.
         
@@ -183,6 +273,7 @@ class GroqLLM(LLMInterface):
             api_key: Groq API key (falls back to GROQ_API_KEY env var)
             model: Model to use (default: llama-3.3-70b-versatile)
             temperature: Sampling temperature (0.0 for deterministic)
+            timeout: Request timeout in seconds (default: None for no timeout)
         """
         import os
         from groq import Groq
@@ -193,7 +284,8 @@ class GroqLLM(LLMInterface):
         
         self.model = model
         self.temperature = temperature
-        self.client = Groq(api_key=self.api_key)
+        self.timeout = timeout
+        self.client = Groq(api_key=self.api_key, timeout=timeout)
         self.call_history: list[str] = []
     
     def generate(self, prompt: str) -> LLMResponse:
@@ -204,28 +296,61 @@ class GroqLLM(LLMInterface):
             
         Returns:
             LLMResponse containing the generated text
+            
+        Raises:
+            RuntimeError: If API call fails or response is malformed
+            TimeoutError: If request times out
         """
         self.call_history.append(prompt)
         
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            temperature=self.temperature,
-            max_tokens=1024,
-        )
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=self.temperature,
+                max_tokens=1024,
+            )
+        except Exception as e:
+            error_msg = str(e).lower()
+            # Check for timeout-related errors
+            if 'timeout' in error_msg or 'timed out' in error_msg:
+                logger.error("Groq API timeout: %s", e)
+                raise TimeoutError(f"Groq API request timed out: {e}") from e
+            # Check for rate limit errors (let caller handle appropriately)
+            if 'rate' in error_msg and 'limit' in error_msg:
+                logger.error("Groq API rate limit: %s", e)
+                raise RuntimeError(f"Groq API rate limit exceeded: {e}") from e
+            # Generic API error
+            logger.error("Groq API error: %s", e)
+            raise RuntimeError(f"Groq API error: {e}") from e
         
-        content = response.choices[0].message.content
+        # Defensive extraction of response content
+        if not response.choices:
+            raise RuntimeError("Groq API returned empty choices")
+        
+        choice = response.choices[0]
+        if not hasattr(choice, 'message') or choice.message is None:
+            raise RuntimeError("Groq API response missing message")
+        
+        content = getattr(choice.message, 'content', None)
+        if content is None:
+            raise RuntimeError("Groq API response missing message content")
+        
+        # Safely extract usage info (may vary by SDK version)
+        usage_info = {}
+        if hasattr(response, 'usage') and response.usage is not None:
+            usage_info = {
+                "prompt_tokens": getattr(response.usage, 'prompt_tokens', 0),
+                "completion_tokens": getattr(response.usage, 'completion_tokens', 0),
+                "total_tokens": getattr(response.usage, 'total_tokens', 0),
+            }
         
         return LLMResponse(
             content=content,
             raw={
-                "model": response.model,
-                "usage": {
-                    "prompt_tokens": response.usage.prompt_tokens,
-                    "completion_tokens": response.usage.completion_tokens,
-                    "total_tokens": response.usage.total_tokens,
-                },
+                "model": getattr(response, 'model', self.model),
+                "usage": usage_info,
             }
         )
