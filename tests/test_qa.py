@@ -190,19 +190,20 @@ class TestExplainQuestion:
         
         This test verifies that when the question can be answered from
         the document content, the system returns a proper answer with citations.
+        Note: confidence=low because paragraph_ids are provided manually (not auto-selected).
         """
         # Configure mock to return an answer based on the document content
         mock_llm = MockLLM(
             default_response=MockLLM.create_response(
                 answer="Neural networks are computational models inspired by biological neurons. They consist of interconnected nodes organized in layers.",
                 citations=["s1_p1"],
-                confidence="high"
+                confidence="high"  # LLM says high, but system will compute low
             )
         )
         
         result = explain_question(
             document=sample_document,
-            paragraph_ids=["s1_p1", "s1_p2"],
+            paragraph_ids=["s1_p1", "s1_p2"],  # Manually provided = low confidence
             question="What are neural networks?",
             llm=mock_llm
         )
@@ -218,7 +219,8 @@ class TestExplainQuestion:
         
         # Verify citations are valid paragraph IDs
         assert result["citations"] == ["s1_p1"]
-        assert result["confidence"] == "high"
+        # System-derived confidence: low because paragraphs were provided manually
+        assert result["confidence"] == "low"
         
         # Verify the prompt was constructed correctly
         assert len(mock_llm.call_history) == 1
@@ -232,13 +234,14 @@ class TestExplainQuestion:
         
         This test verifies that when asked about something not defined
         in the document, the system explicitly says so.
+        Note: confidence=low because no citations are present.
         """
         # Configure mock to return "not defined" response
         mock_llm = MockLLM(
             default_response=MockLLM.create_response(
                 answer="Not defined in the paper",
                 citations=[],
-                confidence="high"
+                confidence="high"  # LLM says high, but system will compute low
             )
         )
         
@@ -252,7 +255,8 @@ class TestExplainQuestion:
         # Verify the system correctly rejects the question
         assert result["answer"] == "Not defined in the paper"
         assert result["citations"] == []
-        assert result["confidence"] == "high"
+        # System-derived confidence: low because no citations
+        assert result["confidence"] == "low"
     
     def test_empty_paragraph_ids(self, sample_document: Document):
         """Test handling of empty paragraph list."""

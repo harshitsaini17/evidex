@@ -10,15 +10,51 @@ from typing import Literal
 
 
 @dataclass
+class Equation:
+    """A mathematical equation within a document.
+    
+    Equations are first-class citizens that must be preserved exactly
+    as they appear in the source document.
+    
+    Attributes:
+        equation_id: Unique identifier for this equation (e.g., "eq1")
+        equation_text: The raw equation text/LaTeX (NOT simplified)
+        associated_paragraph_id: ID of paragraph where this equation appears
+    """
+    equation_id: str
+    equation_text: str
+    associated_paragraph_id: str
+
+
+@dataclass
+class Entities:
+    """Extracted entities from a paragraph.
+    
+    This is scaffolding for future GraphRAG integration.
+    Entities are NOT used for reasoning yet.
+    
+    Attributes:
+        variables: Mathematical variables (e.g., Q, K, V, d_k, d_model)
+        concepts: Domain concepts (e.g., attention, transformer, encoder)
+    """
+    variables: list[str] = field(default_factory=list)
+    concepts: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Paragraph:
     """A single paragraph within a document section.
     
     Attributes:
         paragraph_id: Unique identifier for this paragraph (e.g., "s1_p1")
         text: The actual text content of the paragraph
+        equation_refs: List of equation IDs referenced in this paragraph
+        entities: Extracted entities (variables, concepts) - for future GraphRAG
     """
     paragraph_id: str
     text: str
+    equation_refs: list[str] = field(default_factory=list)
+    entities: Entities | None = None
 
 
 @dataclass
@@ -40,9 +76,11 @@ class Document:
     Attributes:
         title: The document title
         sections: List of sections in the document
+        equations: List of equations in the document
     """
     title: str
     sections: list[Section] = field(default_factory=list)
+    equations: list[Equation] = field(default_factory=list)
     
     def get_paragraph(self, paragraph_id: str) -> Paragraph | None:
         """Retrieve a paragraph by its ID.
@@ -73,6 +111,65 @@ class Document:
             para = self.get_paragraph(pid)
             if para is not None:
                 result.append(para)
+        return result
+    
+    def get_equation(self, equation_id: str) -> Equation | None:
+        """Retrieve an equation by its ID.
+        
+        Args:
+            equation_id: The unique identifier of the equation
+            
+        Returns:
+            The Equation if found, None otherwise
+        """
+        for eq in self.equations:
+            if eq.equation_id == equation_id:
+                return eq
+        return None
+    
+    def get_equations(self, equation_ids: list[str]) -> list[Equation]:
+        """Retrieve multiple equations by their IDs.
+        
+        Args:
+            equation_ids: List of equation identifiers
+            
+        Returns:
+            List of found Equations (in order requested, skipping missing)
+        """
+        result = []
+        for eid in equation_ids:
+            eq = self.get_equation(eid)
+            if eq is not None:
+                result.append(eq)
+        return result
+    
+    def get_equations_for_paragraph(self, paragraph_id: str) -> list[Equation]:
+        """Get all equations associated with a paragraph.
+        
+        Args:
+            paragraph_id: The paragraph ID to find equations for
+            
+        Returns:
+            List of Equations associated with this paragraph
+        """
+        return [eq for eq in self.equations if eq.associated_paragraph_id == paragraph_id]
+    
+    def get_equations_for_paragraphs(self, paragraph_ids: list[str]) -> list[Equation]:
+        """Get all equations associated with a list of paragraphs.
+        
+        Args:
+            paragraph_ids: List of paragraph IDs
+            
+        Returns:
+            List of unique Equations (deduplicated, preserving order)
+        """
+        seen = set()
+        result = []
+        for pid in paragraph_ids:
+            for eq in self.get_equations_for_paragraph(pid):
+                if eq.equation_id not in seen:
+                    seen.add(eq.equation_id)
+                    result.append(eq)
         return result
 
 

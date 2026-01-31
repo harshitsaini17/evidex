@@ -128,13 +128,13 @@ class TestAttentionPaperQA:
             default_response=MockLLM.create_response(
                 answer=f"Based on the paper: {attention_description}...",
                 citations=[context_ids[0]],
-                confidence="high"
+                confidence="high"  # LLM says high, system will compute low
             )
         )
         
         result = explain_question(
             document=attention_paper,
-            paragraph_ids=context_ids,
+            paragraph_ids=context_ids,  # Manually provided = low confidence
             question="How is attention defined?",
             llm=mock_llm
         )
@@ -146,7 +146,8 @@ class TestAttentionPaperQA:
         
         # Answer should be grounded (not "Not defined")
         assert result["citations"] == [context_ids[0]]
-        assert result["confidence"] == "high"
+        # System-derived confidence: low because paragraphs provided manually
+        assert result["confidence"] == "low"
     
     def test_rejects_question_not_in_paper(self, attention_paper: Document):
         """Test that questions about things not in the paper are rejected."""
@@ -213,13 +214,13 @@ class TestAttentionPaperQA:
             default_response=MockLLM.create_response(
                 answer="The Transformer is a model architecture that relies entirely on self-attention.",
                 citations=[context_ids[0], context_ids[1]] if len(context_ids) > 1 else [context_ids[0]],
-                confidence="high"
+                confidence="high"  # LLM says high, system will compute low
             )
         )
         
         result = explain_question(
             document=attention_paper,
-            paragraph_ids=context_ids,
+            paragraph_ids=context_ids,  # Manually provided = low confidence
             question="What is the Transformer architecture?",
             llm=mock_llm
         )
@@ -227,7 +228,8 @@ class TestAttentionPaperQA:
         # Should pass verification
         assert result["answer"] != "Not defined in the paper"
         assert len(result["citations"]) > 0
-        assert result["confidence"] == "high"
+        # System-derived confidence: low because paragraphs provided manually
+        assert result["confidence"] == "low"
 
 
 # =============================================================================

@@ -114,7 +114,8 @@ class TestExplainNode:
         assert result["llm_response"] is None
         assert result["final_response"]["answer"] == "Not defined in the paper"
         assert result["final_response"]["citations"] == []
-        assert result["final_response"]["confidence"] == "high"
+        # Note: confidence is now computed by verifier_node, not explain_node
+        assert "confidence" not in result["final_response"]
     
     def test_calls_llm_with_paragraphs(self, sample_document: Document):
         """Test that LLM is called when paragraphs are present."""
@@ -346,8 +347,11 @@ class TestGraphIdenticalBehavior:
 class TestVerifierNode:
     """Tests for the verifier_node function."""
     
-    def test_passes_valid_response_with_citations(self, sample_document: Document):
-        """Test that valid response with citations passes verification."""
+    def test_passes_valid_response_with_citations_auto_selected(self, sample_document: Document):
+        """Test that valid response with citations passes verification with high confidence.
+        
+        When planner_selected_automatically=True and citations are present, confidence=high.
+        """
         paragraphs = sample_document.get_paragraphs(["s1_p1"])
         state: QAState = {
             "document": sample_document,
@@ -355,11 +359,11 @@ class TestVerifierNode:
             "question": "test",
             "llm": MockLLM(),
             "paragraphs": paragraphs,
+            "planner_selected_automatically": True,  # Planner auto-selected
             "llm_response": None,
             "final_response": {
                 "answer": "Neural networks are computational models.",
                 "citations": ["s1_p1"],
-                "confidence": "high",
             },
         }
         
@@ -368,9 +372,14 @@ class TestVerifierNode:
         assert result["verification_passed"] is True
         assert result["final_response"]["answer"] == "Neural networks are computational models."
         assert result["final_response"]["citations"] == ["s1_p1"]
+        # High confidence: citations present + verified + planner auto-selected
+        assert result["final_response"]["confidence"] == "high"
     
-    def test_passes_not_defined_response_without_citations(self, sample_document: Document):
-        """Test that 'Not defined' response without citations passes."""
+    def test_passes_valid_response_with_citations_manual(self, sample_document: Document):
+        """Test that valid response passes but with low confidence when manually provided.
+        
+        When planner_selected_automatically=False, confidence=low even with citations.
+        """
         paragraphs = sample_document.get_paragraphs(["s1_p1"])
         state: QAState = {
             "document": sample_document,
@@ -378,11 +387,39 @@ class TestVerifierNode:
             "question": "test",
             "llm": MockLLM(),
             "paragraphs": paragraphs,
+            "planner_selected_automatically": False,  # User provided paragraphs
+            "llm_response": None,
+            "final_response": {
+                "answer": "Neural networks are computational models.",
+                "citations": ["s1_p1"],
+            },
+        }
+        
+        result = verifier_node(state)
+        
+        assert result["verification_passed"] is True
+        assert result["final_response"]["answer"] == "Neural networks are computational models."
+        assert result["final_response"]["citations"] == ["s1_p1"]
+        # Low confidence: paragraphs provided manually
+        assert result["final_response"]["confidence"] == "low"
+    
+    def test_passes_not_defined_response_without_citations(self, sample_document: Document):
+        """Test that 'Not defined' response without citations passes.
+        
+        Note: confidence=low because no citations.
+        """
+        paragraphs = sample_document.get_paragraphs(["s1_p1"])
+        state: QAState = {
+            "document": sample_document,
+            "paragraph_ids": ["s1_p1"],
+            "question": "test",
+            "llm": MockLLM(),
+            "paragraphs": paragraphs,
+            "planner_selected_automatically": True,
             "llm_response": None,
             "final_response": {
                 "answer": "Not defined in the paper",
                 "citations": [],
-                "confidence": "high",
             },
         }
         
@@ -390,6 +427,8 @@ class TestVerifierNode:
         
         assert result["verification_passed"] is True
         assert result["final_response"]["answer"] == "Not defined in the paper"
+        # Low confidence: no citations
+        assert result["final_response"]["confidence"] == "low"
     
     def test_rejects_answer_without_citations(self, sample_document: Document):
         """Test that answer claiming information but no citations is rejected."""
@@ -400,11 +439,11 @@ class TestVerifierNode:
             "question": "test",
             "llm": MockLLM(),
             "paragraphs": paragraphs,
+            "planner_selected_automatically": True,
             "llm_response": None,
             "final_response": {
                 "answer": "Neural networks use backpropagation.",  # Claims info
                 "citations": [],  # But no citations!
-                "confidence": "high",
             },
         }
         
@@ -424,11 +463,11 @@ class TestVerifierNode:
             "question": "test",
             "llm": MockLLM(),
             "paragraphs": paragraphs,
+            "planner_selected_automatically": True,
             "llm_response": None,
             "final_response": {
                 "answer": "Some answer",
                 "citations": ["s1_p1", "s2_p1"],  # s2_p1 not in provided paragraphs
-                "confidence": "high",
             },
         }
         
@@ -447,11 +486,11 @@ class TestVerifierNode:
             "question": "test",
             "llm": MockLLM(),
             "paragraphs": paragraphs,
+            "planner_selected_automatically": True,
             "llm_response": None,
             "final_response": {
                 "answer": "Some answer",
                 "citations": ["nonexistent_paragraph"],  # Completely made up
-                "confidence": "high",
             },
         }
         
@@ -459,6 +498,7 @@ class TestVerifierNode:
         
         assert result["verification_passed"] is False
         assert result["final_response"]["answer"] == "Not defined in the paper"
+        assert result["final_response"]["confidence"] == "low"
 
 
 class TestVerifierIntegration:
@@ -488,18 +528,21 @@ class TestVerifierIntegration:
         assert result["confidence"] == "low"
     
     def test_graph_accepts_grounded_answer(self, sample_document: Document):
-        """Test that the full graph accepts properly grounded answers."""
+        """Test that the full graph accepts properly grounded answers.
+        
+        Note: confidence=low because paragraph_ids are provided manually.
+        """
         mock_llm = MockLLM(
             default_response=MockLLM.create_response(
                 answer="Neural networks are computational models inspired by biological neurons.",
                 citations=["s1_p1"],
-                confidence="high"
+                confidence="high"  # LLM says high, but system computes low
             )
         )
         
         result = explain_question_graph(
             document=sample_document,
-            paragraph_ids=["s1_p1"],
+            paragraph_ids=["s1_p1"],  # Manually provided = low confidence
             question="What are neural networks?",
             llm=mock_llm
         )
@@ -507,15 +550,19 @@ class TestVerifierIntegration:
         # Should pass verification
         assert result["answer"] == "Neural networks are computational models inspired by biological neurons."
         assert result["citations"] == ["s1_p1"]
-        assert result["confidence"] == "high"
+        # System-derived confidence: low because paragraphs provided manually
+        assert result["confidence"] == "low"
     
     def test_graph_accepts_not_defined_answer(self, sample_document: Document):
-        """Test that 'Not defined' answers pass verification."""
+        """Test that 'Not defined' answers pass verification.
+        
+        Note: confidence=low because no citations.
+        """
         mock_llm = MockLLM(
             default_response=MockLLM.create_response(
                 answer="Not defined in the paper",
                 citations=[],
-                confidence="high"
+                confidence="high"  # LLM says high, but system computes low
             )
         )
         
@@ -528,7 +575,8 @@ class TestVerifierIntegration:
         
         assert result["answer"] == "Not defined in the paper"
         assert result["citations"] == []
-        assert result["confidence"] == "high"
+        # System-derived confidence: low because no citations
+        assert result["confidence"] == "low"
 
 
 # =============================================================================

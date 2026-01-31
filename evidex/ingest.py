@@ -2,7 +2,10 @@
 PDF ingestion module for Evidex.
 
 Extracts text from PDF documents and converts them into the
-Document → Section → Paragraph structure used by the Q&A system.
+Document → Section → Paragraph → Equation structure used by the Q&A system.
+
+Equations are treated as first-class citizens and are extracted separately
+from prose content, with proper associations to their source paragraphs.
 """
 
 import hashlib
@@ -11,7 +14,7 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-from evidex.models import Document, Section, Paragraph
+from evidex.models import Document, Section, Paragraph, Equation
 
 
 def extract_text_from_pdf(pdf_path: str | Path) -> str:
@@ -122,21 +125,24 @@ def detect_section_header(text: str) -> str | None:
 def parse_pdf_to_document(
     pdf_path: str | Path,
     title: str | None = None,
+    extract_equations: bool = True,
 ) -> Document:
     """Parse a PDF file into a Document structure.
     
-    This is a simple parser that:
+    This parser:
     1. Extracts all text from the PDF
     2. Splits into paragraphs
     3. Detects section headers to create sections
     4. Assigns stable paragraph IDs
+    5. Extracts equations and links them to paragraphs
     
     Args:
         pdf_path: Path to the PDF file
         title: Document title (defaults to filename without extension)
+        extract_equations: Whether to extract equations (default: True)
         
     Returns:
-        Document with sections and paragraphs
+        Document with sections, paragraphs, and equations
     """
     pdf_path = Path(pdf_path)
     
@@ -189,7 +195,15 @@ def parse_pdf_to_document(
             paragraphs=current_paragraphs,
         ))
     
-    return Document(title=title, sections=sections)
+    # Create document
+    doc = Document(title=title, sections=sections)
+    
+    # Extract equations if requested
+    if extract_equations:
+        equations = extract_equations_from_document(doc)
+        doc.equations = equations
+    
+    return doc
 
 
 def get_all_paragraph_ids(document: Document) -> list[str]:
@@ -236,5 +250,157 @@ def search_paragraphs(
             text = para.text if case_sensitive else para.text.lower()
             if query in text:
                 matching_ids.append(para.paragraph_id)
+    
+    return matching_ids
+
+
+# =============================================================================
+# Equation Extraction
+# =============================================================================
+
+def generate_equation_id(equation_index: int) -> str:
+    """Generate a stable equation ID.
+    
+    Args:
+        equation_index: Zero-based equation index
+        
+    Returns:
+        Equation ID like "eq1" (1-indexed for readability)
+    """
+    return f"eq{equation_index + 1}"
+
+
+def extract_equations_from_text(
+    text: str,
+    paragraph_id: str,
+    start_equation_index: int = 0,
+) -> tuple[list[Equation], str, int]:
+    """Extract equations from paragraph text.
+    
+    Detects common equation patterns in academic papers:
+    - Explicit equation markers: "Equation 1:", "(1)", etc.
+    - Mathematical expressions with special characters
+    - Inline formulas with variables and operators
+    
+    The original equation text is preserved EXACTLY - no simplification.
+    
+    Args:
+        text: The paragraph text to extract equations from
+        paragraph_id: ID of the source paragraph
+        start_equation_index: Starting index for equation IDs
+        
+    Returns:
+        Tuple of (list of Equation objects, cleaned text, next equation index)
+    """
+    equations = []
+    equation_refs = []
+    current_index = start_equation_index
+    
+    # Patterns for equation detection in academic papers
+    # Pattern 1: Explicit numbered equations like "Attention(Q,K,V) = softmax(QK^T/√d_k)V"
+    # Pattern 2: Inline math with special symbols: ∑, ∏, √, etc.
+    # Pattern 3: Expressions with subscripts/superscripts indicators
+    
+    # Common equation patterns in the Attention paper format
+    equation_patterns = [
+        # Softmax and attention formulas
+        r'(Attention\s*\([^)]+\)\s*=\s*[^\n]+)',
+        # Multi-head attention formula
+        r'(MultiHead\s*\([^)]+\)\s*=\s*[^\n]+)',
+        # Concatenation expressions
+        r'(head_?i\s*=\s*[^\n]+)',
+        # Generic formulas with equals sign and math symbols
+        r'([A-Z][a-z]*\s*\([^)]+\)\s*=\s*softmax\s*\([^)]+\)[^\n]*)',
+        # FFN formulas
+        r'(FFN\s*\([^)]+\)\s*=\s*[^\n]+)',
+        # Layer norm expressions
+        r'(LayerNorm\s*\([^)]+\))',
+        # Positional encoding formulas
+        r'(PE\s*\([^)]+\)\s*=\s*[^\n]+)',
+        # Generic expressions with sqrt symbol
+        r'([^.]*√[^.]+)',
+    ]
+    
+    cleaned_text = text
+    
+    for pattern in equation_patterns:
+        matches = re.finditer(pattern, text, re.IGNORECASE)
+        for match in matches:
+            eq_text = match.group(1).strip()
+            
+            # Skip if too short or already captured
+            if len(eq_text) < 10:
+                continue
+            
+            # Check if this equation text is already captured
+            already_captured = any(eq.equation_text == eq_text for eq in equations)
+            if already_captured:
+                continue
+            
+            eq_id = generate_equation_id(current_index)
+            equations.append(Equation(
+                equation_id=eq_id,
+                equation_text=eq_text,
+                associated_paragraph_id=paragraph_id,
+            ))
+            equation_refs.append(eq_id)
+            current_index += 1
+    
+    return equations, equation_refs, current_index
+
+
+def extract_equations_from_document(document: Document) -> list[Equation]:
+    """Extract all equations from a document and update paragraph refs.
+    
+    This function scans all paragraphs for equation patterns and:
+    1. Creates Equation objects for each detected equation
+    2. Updates paragraph.equation_refs to link paragraphs to their equations
+    
+    Args:
+        document: Document to extract equations from
+        
+    Returns:
+        List of all extracted Equation objects
+    """
+    all_equations = []
+    equation_index = 0
+    
+    for section in document.sections:
+        for para in section.paragraphs:
+            equations, eq_refs, equation_index = extract_equations_from_text(
+                para.text,
+                para.paragraph_id,
+                equation_index,
+            )
+            all_equations.extend(equations)
+            para.equation_refs.extend(eq_refs)
+    
+    return all_equations
+
+
+def search_equations(
+    document: Document,
+    query: str,
+    case_sensitive: bool = False,
+) -> list[str]:
+    """Search for equations containing a query string.
+    
+    Args:
+        document: Document to search
+        query: Text to search for
+        case_sensitive: Whether search is case sensitive
+        
+    Returns:
+        List of equation IDs containing the query
+    """
+    if not case_sensitive:
+        query = query.lower()
+    
+    matching_ids = []
+    
+    for eq in document.equations:
+        text = eq.equation_text if case_sensitive else eq.equation_text.lower()
+        if query in text:
+            matching_ids.append(eq.equation_id)
     
     return matching_ids

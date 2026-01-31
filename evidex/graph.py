@@ -9,9 +9,10 @@ from typing import TypedDict
 
 from langgraph.graph import StateGraph, START, END
 
-from evidex.models import Document, Paragraph
+from evidex.models import Document, Paragraph, Equation, Entities
 from evidex.llm import LLMInterface, LLMResponse, parse_llm_response
-from evidex.qa import build_context_block, build_prompt
+from evidex.qa import build_context_block, build_prompt, build_equations_block
+from evidex.entities import extract_entities_as_model
 
 
 # =============================================================================
@@ -28,12 +29,15 @@ class QAState(TypedDict, total=False):
         llm: The LLM interface (passed through state)
         include_debug: Whether to include debug info in final output (default: False)
         candidate_paragraph_ids: Paragraph IDs selected by planner (set by planner_node)
+        planner_selected_automatically: True if planner selected paragraphs (not provided by user)
         paragraphs: Retrieved paragraphs (set by retrieve_paragraphs_node)
+        equations: Retrieved equations associated with paragraphs (set by retrieve_paragraphs_node)
         llm_response: Raw LLM response (set by explain_node)
         final_response: Final structured response dict (set by explain_node)
         verification_passed: Whether the response passed verification (set by verifier_node)
         planner_reason: Explanation of planner's decision (set by planner_node)
         verifier_reason: Explanation of verifier's decision (set by verifier_node)
+        linked_evidence: Evidence links based on shared entities (set by evidence_linker_node)
     """
     # Inputs
     document: Document
@@ -44,7 +48,9 @@ class QAState(TypedDict, total=False):
     
     # Intermediate state (set by nodes)
     candidate_paragraph_ids: list[str]  # Set by planner_node
+    planner_selected_automatically: bool  # True if planner selected paragraphs
     paragraphs: list[Paragraph]
+    equations: list[Equation]  # Equations associated with retrieved paragraphs
     llm_response: LLMResponse | None
     
     # Debug/introspection state (set by nodes)
@@ -54,6 +60,7 @@ class QAState(TypedDict, total=False):
     # Output
     final_response: dict
     verification_passed: bool
+    linked_evidence: list[dict]  # Evidence links from evidence_linker_node
 
 
 # =============================================================================
@@ -131,6 +138,7 @@ def planner_node(state: QAState) -> dict:
         return {
             "candidate_paragraph_ids": provided_ids,
             "planner_reason": reason,
+            "planner_selected_automatically": False,  # User provided paragraphs
         }
     
     # Extract keywords from the question
@@ -142,6 +150,7 @@ def planner_node(state: QAState) -> dict:
         return {
             "candidate_paragraph_ids": [],
             "planner_reason": reason,
+            "planner_selected_automatically": True,  # Planner made the selection
         }
     
     # Score each paragraph by keyword overlap
@@ -167,6 +176,7 @@ def planner_node(state: QAState) -> dict:
         return {
             "candidate_paragraph_ids": [],
             "planner_reason": reason,
+            "planner_selected_automatically": True,  # Planner made the selection
         }
     
     # Sort by score (descending), then by position (ascending) for stability
@@ -194,30 +204,51 @@ def planner_node(state: QAState) -> dict:
     return {
         "candidate_paragraph_ids": selected_ids,
         "planner_reason": reason,
+        "planner_selected_automatically": True,  # Planner made the selection
     }
 
 
 def retrieve_paragraphs_node(state: QAState) -> dict:
-    """Retrieve paragraphs from the document based on candidate_paragraph_ids.
+    """Retrieve paragraphs and associated equations from the document.
     
-    This node wraps Document.get_paragraphs() to fetch the specified
-    paragraphs from the document. It uses candidate_paragraph_ids from
-    the planner if available, otherwise falls back to paragraph_ids.
+    This node:
+    1. Fetches paragraphs using candidate_paragraph_ids or paragraph_ids
+    2. Automatically retrieves equations associated with those paragraphs
+    
+    Equations are treated as first-class citizens - if a paragraph contains
+    or references an equation, that equation is included in the context.
     
     Args:
         state: Current workflow state with document and paragraph IDs
         
     Returns:
-        Dict with 'paragraphs' key containing the retrieved paragraphs
+        Dict with 'paragraphs' and 'equations' keys
     """
     document = state["document"]
     
     # Use candidate_paragraph_ids from planner if available
     paragraph_ids = state.get("candidate_paragraph_ids") or state.get("paragraph_ids", [])
     
+    # Retrieve paragraphs
     paragraphs = document.get_paragraphs(paragraph_ids)
     
-    return {"paragraphs": paragraphs}
+    # Retrieve equations associated with these paragraphs
+    # This includes:
+    # 1. Equations where associated_paragraph_id matches
+    # 2. Equations referenced via paragraph.equation_refs
+    equations = document.get_equations_for_paragraphs(paragraph_ids)
+    
+    # Also get equations referenced by equation_refs in paragraphs
+    for para in paragraphs:
+        for eq_ref in para.equation_refs:
+            eq = document.get_equation(eq_ref)
+            if eq and eq not in equations:
+                equations.append(eq)
+    
+    return {
+        "paragraphs": paragraphs,
+        "equations": equations,
+    }
 
 
 def explain_node(state: QAState) -> dict:
@@ -226,16 +257,20 @@ def explain_node(state: QAState) -> dict:
     This node:
     1. Checks if paragraphs were retrieved
     2. If no paragraphs, returns "Not defined in the paper"
-    3. Otherwise, builds prompt and calls LLM
+    3. Otherwise, builds prompt with paragraphs AND equations
     4. Parses and validates the response
     
+    Equations are included as first-class content, clearly marked
+    separately from prose paragraphs.
+    
     Args:
-        state: Current workflow state with paragraphs, question, and llm
+        state: Current workflow state with paragraphs, equations, question, and llm
         
     Returns:
         Dict with 'llm_response' and 'final_response' keys
     """
     paragraphs = state["paragraphs"]
+    equations = state.get("equations", [])
     question = state["question"]
     llm = state["llm"]
     
@@ -246,13 +281,18 @@ def explain_node(state: QAState) -> dict:
             "final_response": {
                 "answer": "Not defined in the paper",
                 "citations": [],
-                "confidence": "high",
+                # Note: confidence will be computed by verifier_node
             }
         }
     
-    # Build context and prompt
+    # Build context with paragraphs
     context = build_context_block(paragraphs)
-    prompt = build_prompt(context, question)
+    
+    # Build equations block if we have equations
+    equations_context = build_equations_block(equations) if equations else ""
+    
+    # Build prompt with both paragraphs and equations
+    prompt = build_prompt(context, question, equations_context)
     
     # Get LLM response
     response = llm.generate(prompt)
@@ -267,15 +307,12 @@ def explain_node(state: QAState) -> dict:
         if cid in valid_paragraph_ids
     ]
     
-    # Validate confidence value
-    confidence = parsed.get("confidence", "low")
-    if confidence not in ("high", "low"):
-        confidence = "low"
-    
+    # Note: confidence is computed by verifier_node based on system rules:
+    # high = citations non-empty + verifier passed + planner selected automatically
     final_response = {
         "answer": parsed.get("answer", "Not defined in the paper"),
         "citations": valid_citations,
-        "confidence": confidence,
+        # confidence will be set by verifier_node
     }
     
     return {
@@ -285,11 +322,18 @@ def explain_node(state: QAState) -> dict:
 
 
 def verifier_node(state: QAState) -> dict:
-    """Verify that the response is grounded in the provided paragraphs.
+    """Verify that the response is grounded and compute system-derived confidence.
     
     This node enforces hallucination control by verifying:
     1. If answer != "Not defined in the paper", citations must be non-empty
     2. All citations must exist in the provided paragraph_ids
+    
+    System-derived confidence rules:
+    - confidence = "high" ONLY if:
+      1. citations are non-empty
+      2. verifier passed without overrides
+      3. planner selected paragraphs automatically
+    - Otherwise: confidence = "low"
     
     If verification fails, the response is overridden to reject the answer.
     
@@ -302,6 +346,7 @@ def verifier_node(state: QAState) -> dict:
     final_response = state["final_response"]
     paragraphs = state["paragraphs"]
     include_debug = state.get("include_debug", False)
+    planner_selected_automatically = state.get("planner_selected_automatically", False)
     
     answer = final_response.get("answer", "")
     citations = final_response.get("citations", [])
@@ -319,7 +364,7 @@ def verifier_node(state: QAState) -> dict:
         rejected_response = {
             "answer": "Not defined in the paper",
             "citations": [],
-            "confidence": "low",
+            "confidence": "low",  # Rejection always = low confidence
         }
         if include_debug:
             rejected_response["debug"] = {
@@ -341,7 +386,7 @@ def verifier_node(state: QAState) -> dict:
         rejected_response = {
             "answer": "Not defined in the paper",
             "citations": [],
-            "confidence": "low",
+            "confidence": "low",  # Rejection always = low confidence
         }
         if include_debug:
             rejected_response["debug"] = {
@@ -354,14 +399,39 @@ def verifier_node(state: QAState) -> dict:
             "verifier_reason": reason,
         }
     
-    # Verification passed
+    # Verification passed - now compute system-derived confidence
+    # confidence = "high" ONLY if:
+    #   1. citations are non-empty
+    #   2. verifier passed (we're here, so yes)
+    #   3. planner selected paragraphs automatically
+    verification_passed_without_override = True  # We passed all checks
+    
+    if has_citations and verification_passed_without_override and planner_selected_automatically:
+        confidence = "high"
+    else:
+        confidence = "low"
+    
+    # Build reason
     if is_not_defined:
         reason = "PASSED: Answer correctly indicates topic not defined in paper."
     else:
         reason = f"PASSED: Answer grounded with {len(citations)} valid citations: {citations}."
     
+    # Add confidence reasoning to verifier reason
+    confidence_factors = []
+    if not has_citations:
+        confidence_factors.append("no citations")
+    if not planner_selected_automatically:
+        confidence_factors.append("paragraphs provided manually")
+    
+    if confidence_factors:
+        reason += f" Confidence=low due to: {', '.join(confidence_factors)}."
+    else:
+        reason += " Confidence=high (citations present, verified, planner auto-selected)."
+    
     # Add debug info to final response if requested
     output_response = dict(final_response)
+    output_response["confidence"] = confidence
     if include_debug:
         output_response["debug"] = {
             "planner_reason": state.get("planner_reason", ""),
@@ -375,6 +445,168 @@ def verifier_node(state: QAState) -> dict:
     }
 
 
+def evidence_linker_node(state: QAState) -> dict:
+    """Link related evidence based on shared entities.
+    
+    This node connects paragraphs and equations that share common entities
+    (variables or concepts). It does NOT call an LLM and does NOT generate
+    prose - it only groups existing evidence.
+    
+    Evidence is linked if and only if they share at least one extracted entity.
+    
+    Args:
+        state: Current workflow state with paragraphs, equations
+        
+    Returns:
+        Dict with 'linked_evidence' key containing list of evidence links:
+        [
+            {
+                "source_ids": [paragraph_id | equation_id, ...],
+                "shared_entities": {"variables": [...], "concepts": [...]}
+            },
+            ...
+        ]
+    """
+    paragraphs = state.get("paragraphs", [])
+    equations = state.get("equations", [])
+    
+    # If no evidence to link, return empty list
+    if not paragraphs and not equations:
+        return {"linked_evidence": []}
+    
+    # Extract entities for each piece of evidence
+    # Structure: {id: {"variables": set, "concepts": set}}
+    evidence_entities: dict[str, dict[str, set[str]]] = {}
+    
+    for para in paragraphs:
+        # Use pre-extracted entities if available, otherwise extract on-the-fly
+        if para.entities:
+            entities = para.entities
+        else:
+            entities = extract_entities_as_model(para.text)
+        
+        evidence_entities[para.paragraph_id] = {
+            "variables": set(entities.variables),
+            "concepts": set(entities.concepts),
+        }
+    
+    for eq in equations:
+        # Extract entities from equation text
+        entities = extract_entities_as_model(eq.equation_text)
+        evidence_entities[eq.equation_id] = {
+            "variables": set(entities.variables),
+            "concepts": set(entities.concepts),
+        }
+    
+    # Find all pairs that share at least one entity
+    # Use Union-Find to group connected evidence
+    all_ids = list(evidence_entities.keys())
+    
+    if len(all_ids) < 2:
+        # Need at least 2 pieces of evidence to form a link
+        return {"linked_evidence": []}
+    
+    # Build adjacency list for entities that are shared
+    # Map each entity to the evidence IDs that contain it
+    variable_to_evidence: dict[str, set[str]] = {}
+    concept_to_evidence: dict[str, set[str]] = {}
+    
+    for eid, ent in evidence_entities.items():
+        for var in ent["variables"]:
+            if var not in variable_to_evidence:
+                variable_to_evidence[var] = set()
+            variable_to_evidence[var].add(eid)
+        
+        for concept in ent["concepts"]:
+            if concept not in concept_to_evidence:
+                concept_to_evidence[concept] = set()
+            concept_to_evidence[concept].add(eid)
+    
+    # Find all connected components (groups of linked evidence)
+    # Using simple Union-Find
+    parent = {eid: eid for eid in all_ids}
+    
+    def find(x: str) -> str:
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+    
+    def union(x: str, y: str) -> None:
+        px, py = find(x), find(y)
+        if px != py:
+            parent[px] = py
+    
+    # Union evidence that shares variables
+    for var, eids in variable_to_evidence.items():
+        eids_list = list(eids)
+        for i in range(1, len(eids_list)):
+            union(eids_list[0], eids_list[i])
+    
+    # Union evidence that shares concepts
+    for concept, eids in concept_to_evidence.items():
+        eids_list = list(eids)
+        for i in range(1, len(eids_list)):
+            union(eids_list[0], eids_list[i])
+    
+    # Group by connected component
+    components: dict[str, list[str]] = {}
+    for eid in all_ids:
+        root = find(eid)
+        if root not in components:
+            components[root] = []
+        components[root].append(eid)
+    
+    # Build linked_evidence output
+    # Only include components with 2+ pieces of evidence (actual links)
+    linked_evidence = []
+    
+    for root, source_ids in components.items():
+        if len(source_ids) < 2:
+            # No link - single piece of evidence
+            continue
+        
+        # Find shared entities among all sources in this component
+        # (intersection of all entity sets)
+        shared_vars = None
+        shared_concepts = None
+        
+        for eid in source_ids:
+            ent = evidence_entities[eid]
+            if shared_vars is None:
+                shared_vars = ent["variables"].copy()
+                shared_concepts = ent["concepts"].copy()
+            else:
+                # For shared entities, we want entities that appear in at least 2 sources
+                # Not strict intersection, but entities connecting any pair
+                pass
+        
+        # Actually, for "shared" we want the union of entities that caused links
+        # i.e., entities that appear in 2+ sources
+        all_vars_in_group: dict[str, int] = {}
+        all_concepts_in_group: dict[str, int] = {}
+        
+        for eid in source_ids:
+            ent = evidence_entities[eid]
+            for var in ent["variables"]:
+                all_vars_in_group[var] = all_vars_in_group.get(var, 0) + 1
+            for concept in ent["concepts"]:
+                all_concepts_in_group[concept] = all_concepts_in_group.get(concept, 0) + 1
+        
+        # Shared = appears in 2+ sources
+        shared_variables = sorted([v for v, count in all_vars_in_group.items() if count >= 2])
+        shared_concepts_list = sorted([c for c, count in all_concepts_in_group.items() if count >= 2])
+        
+        linked_evidence.append({
+            "source_ids": sorted(source_ids),
+            "shared_entities": {
+                "variables": shared_variables,
+                "concepts": shared_concepts_list,
+            }
+        })
+    
+    return {"linked_evidence": linked_evidence}
+
+
 # =============================================================================
 # Graph Construction
 # =============================================================================
@@ -382,13 +614,14 @@ def verifier_node(state: QAState) -> dict:
 def create_qa_graph() -> StateGraph:
     """Create the Q&A workflow graph.
     
-    The graph has four nodes:
+    The graph has five nodes:
     1. planner: Selects candidate paragraphs via keyword matching
     2. retrieve_paragraphs: Fetches paragraphs from document
     3. explain: Generates answer using LLM
     4. verify: Validates response is grounded in provided paragraphs
+    5. evidence_linker: Links related evidence based on shared entities
     
-    Flow: START -> planner -> retrieve_paragraphs -> explain -> verify -> END
+    Flow: START -> planner -> retrieve_paragraphs -> explain -> verify -> evidence_linker -> END
     
     Returns:
         Compiled StateGraph ready for execution
@@ -401,13 +634,15 @@ def create_qa_graph() -> StateGraph:
     builder.add_node("retrieve_paragraphs", retrieve_paragraphs_node)
     builder.add_node("explain", explain_node)
     builder.add_node("verify", verifier_node)
+    builder.add_node("evidence_linker", evidence_linker_node)
     
-    # Define the flow: planner -> retrieve -> explain -> verify -> END
+    # Define the flow: planner -> retrieve -> explain -> verify -> evidence_linker -> END
     builder.add_edge(START, "planner")
     builder.add_edge("planner", "retrieve_paragraphs")
     builder.add_edge("retrieve_paragraphs", "explain")
     builder.add_edge("explain", "verify")
-    builder.add_edge("verify", END)
+    builder.add_edge("verify", "evidence_linker")
+    builder.add_edge("evidence_linker", END)
     
     # Compile and return
     return builder.compile()

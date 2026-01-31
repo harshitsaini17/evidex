@@ -5,7 +5,7 @@ This module provides the core explain_question function that answers
 questions using ONLY the content from the provided document paragraphs.
 """
 
-from evidex.models import Document, Paragraph, QAResponse
+from evidex.models import Document, Paragraph, Equation, QAResponse
 from evidex.llm import LLMInterface, LLMResponse, parse_llm_response
 
 
@@ -13,12 +13,13 @@ from evidex.llm import LLMInterface, LLMResponse, parse_llm_response
 SYSTEM_PROMPT = """You are a research paper analysis assistant. Your ONLY task is to answer questions using EXCLUSIVELY the provided document content.
 
 CRITICAL RULES - YOU MUST FOLLOW THESE EXACTLY:
-1. You may ONLY use information that is EXPLICITLY stated in the provided paragraphs.
+1. You may ONLY use information that is EXPLICITLY stated in the provided paragraphs and equations.
 2. You must NEVER use any external knowledge, even if you know the answer from training.
 3. If a concept, term, or fact is NOT defined or explained in the provided text, you MUST respond with "Not defined in the paper".
-4. Every claim in your answer MUST be directly traceable to the provided paragraphs.
+4. Every claim in your answer MUST be directly traceable to the provided paragraphs or equations.
 5. You MUST cite the paragraph IDs that support your answer.
 6. If you are uncertain whether the text supports the answer, set confidence to "low".
+7. EQUATIONS are provided separately and are CRITICAL to understanding. Do NOT simplify or modify equations.
 
 You must respond ONLY with a JSON object in this exact format:
 {
@@ -49,22 +50,57 @@ def build_context_block(paragraphs: list[Paragraph]) -> str:
     return "\n\n".join(blocks)
 
 
-def build_prompt(context: str, question: str) -> str:
+def build_equations_block(equations: list[Equation]) -> str:
+    """Build a formatted equations block.
+    
+    Equations are treated as first-class citizens and are clearly
+    marked separately from prose paragraphs.
+    
+    Args:
+        equations: List of equations to include
+        
+    Returns:
+        Formatted string with equation IDs and text
+    """
+    if not equations:
+        return ""
+    
+    blocks = []
+    for eq in equations:
+        blocks.append(f"[{eq.equation_id}] (from {eq.associated_paragraph_id})\n{eq.equation_text}")
+    
+    return "\n\n".join(blocks)
+
+
+def build_prompt(context: str, question: str, equations_context: str = "") -> str:
     """Build the complete prompt for the LLM.
     
     Args:
         context: The formatted paragraph context
         question: The user's question
+        equations_context: Optional formatted equations block
         
     Returns:
         Complete prompt string
     """
+    # Build equations section if present
+    equations_section = ""
+    if equations_context:
+        equations_section = f"""
+=== EQUATIONS ===
+The following equations are critical to understanding the document content.
+Do NOT simplify or modify these equations - they must be preserved exactly.
+
+{equations_context}
+=== END EQUATIONS ===
+"""
+    
     return f"""{SYSTEM_PROMPT}
 
 === DOCUMENT CONTENT ===
 {context}
 === END DOCUMENT CONTENT ===
-
+{equations_section}
 QUESTION: {question}
 
 Remember: Answer ONLY using the document content above. If the answer is not in the text, respond with "Not defined in the paper".
