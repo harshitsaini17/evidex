@@ -42,6 +42,23 @@ class Entities:
 
 
 @dataclass
+class Motivation:
+    """An explicit author motivation extracted from text.
+    
+    Represents a "why" statement that authors explicitly made,
+    identified by trigger phrases like "because", "to address", etc.
+    
+    Attributes:
+        text: The motivation statement (the "why")
+        trigger_phrase: The phrase that introduced the motivation
+        full_sentence: The complete sentence containing the motivation
+    """
+    text: str
+    trigger_phrase: str
+    full_sentence: str
+
+
+@dataclass
 class Paragraph:
     """A single paragraph within a document section.
     
@@ -50,11 +67,13 @@ class Paragraph:
         text: The actual text content of the paragraph
         equation_refs: List of equation IDs referenced in this paragraph
         entities: Extracted entities (variables, concepts) - for future GraphRAG
+        motivations: Explicit author motivations found in this paragraph
     """
     paragraph_id: str
     text: str
     equation_refs: list[str] = field(default_factory=list)
     entities: Entities | None = None
+    motivations: list['Motivation'] = field(default_factory=list)
 
 
 @dataclass

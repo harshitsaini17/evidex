@@ -61,6 +61,8 @@ class QAState(TypedDict, total=False):
     final_response: dict
     verification_passed: bool
     linked_evidence: list[dict]  # Evidence links from evidence_linker_node
+    composed_explanation: str | None  # Composed explanation from composer_node
+    composer_verification_passed: bool  # Whether composed explanation passed verification
 
 
 # =============================================================================
@@ -608,20 +610,304 @@ def evidence_linker_node(state: QAState) -> dict:
 
 
 # =============================================================================
+# Composer Prompt
+# =============================================================================
+
+COMPOSER_SYSTEM_PROMPT = """You are a research paper explanation composer. Your task is to compose a clear, grounded explanation by ONLY paraphrasing the provided verified evidence.
+
+CRITICAL RULES - YOU MUST FOLLOW THESE EXACTLY:
+1. You may ONLY paraphrase existing evidence - do NOT introduce new information.
+2. Every sentence MUST cite exactly one source using format: "Statement. [source_id]"
+3. You may NOT introduce new entities (variables, concepts) not present in the evidence.
+4. You may NOT make claims that combine information in ways not supported by the evidence.
+5. You may NOT add assumptions, implications, or conclusions beyond what is stated.
+6. You may NOT use any external knowledge.
+7. If the evidence is insufficient, compose what you can and cite appropriately.
+
+Format each sentence as:
+"Paraphrased statement from source. [source_id]"
+
+You must respond ONLY with a JSON object in this exact format:
+{
+    "composed_explanation": "First sentence. [source_id_1] Second sentence. [source_id_2]",
+    "sentences": [
+        {"text": "First sentence.", "citation": "source_id_1"},
+        {"text": "Second sentence.", "citation": "source_id_2"}
+    ]
+}
+
+Do not include any text outside the JSON object."""
+
+
+def build_composer_prompt(
+    paragraphs: list[Paragraph],
+    equations: list[Equation],
+    linked_evidence: list[dict],
+    question: str,
+) -> str:
+    """Build the composer prompt with verified evidence.
+    
+    Args:
+        paragraphs: Verified paragraphs to compose from
+        equations: Verified equations to compose from
+        linked_evidence: Links between related evidence
+        question: The original question being answered
+        
+    Returns:
+        Complete prompt string for the composer
+    """
+    # Build evidence block
+    evidence_blocks = []
+    
+    for para in paragraphs:
+        evidence_blocks.append(f"[{para.paragraph_id}] (paragraph)\n{para.text}")
+    
+    for eq in equations:
+        evidence_blocks.append(f"[{eq.equation_id}] (equation from {eq.associated_paragraph_id})\n{eq.equation_text}")
+    
+    evidence_text = "\n\n".join(evidence_blocks) if evidence_blocks else "No evidence provided."
+    
+    # Build linked evidence section
+    links_text = ""
+    if linked_evidence:
+        link_descriptions = []
+        for link in linked_evidence:
+            source_ids = ", ".join(link["source_ids"])
+            shared_vars = link["shared_entities"].get("variables", [])
+            shared_concepts = link["shared_entities"].get("concepts", [])
+            shared_items = shared_vars + shared_concepts
+            shared_str = ", ".join(shared_items) if shared_items else "none"
+            link_descriptions.append(f"  - Sources [{source_ids}] share: {shared_str}")
+        links_text = "\n\n=== LINKED EVIDENCE ===\nThe following evidence is connected:\n" + "\n".join(link_descriptions) + "\n=== END LINKED EVIDENCE ==="
+    
+    return f"""{COMPOSER_SYSTEM_PROMPT}
+
+=== VERIFIED EVIDENCE ===
+{evidence_text}
+=== END VERIFIED EVIDENCE ==={links_text}
+
+QUESTION: {question}
+
+Compose an explanation using ONLY the verified evidence above. Each sentence must cite its source.
+
+JSON Response:"""
+
+
+def parse_composer_response(response) -> dict:
+    """Parse the composer LLM response.
+    
+    Args:
+        response: LLM response (LLMResponse or str)
+        
+    Returns:
+        Dict with 'composed_explanation' and 'sentences' keys
+    """
+    import json
+    import re
+    
+    # Get text from response
+    if hasattr(response, 'content'):
+        text = response.content
+    else:
+        text = str(response)
+    
+    # Try to extract JSON from the response
+    # Handle markdown code blocks
+    if '```json' in text:
+        match = re.search(r'```json\s*\n?(.*?)\n?```', text, re.DOTALL)
+        if match:
+            text = match.group(1)
+    elif '```' in text:
+        match = re.search(r'```\s*\n?(.*?)\n?```', text, re.DOTALL)
+        if match:
+            text = match.group(1)
+    
+    # Find JSON object in text
+    text = text.strip()
+    start = text.find('{')
+    end = text.rfind('}') + 1
+    
+    if start >= 0 and end > start:
+        json_str = text[start:end]
+        try:
+            parsed = json.loads(json_str)
+            return {
+                "composed_explanation": parsed.get("composed_explanation", ""),
+                "sentences": parsed.get("sentences", []),
+            }
+        except json.JSONDecodeError:
+            pass
+    
+    # Fallback: return empty
+    return {
+        "composed_explanation": "",
+        "sentences": [],
+    }
+
+
+def verify_composed_explanation(
+    sentences: list[dict],
+    valid_source_ids: set[str],
+    paragraphs: list[Paragraph],
+    equations: list[Equation],
+) -> tuple[bool, str]:
+    """Verify that the composed explanation follows all rules.
+    
+    Rules:
+    1. Every sentence must have a citation
+    2. Citations must reference valid source IDs
+    3. No new entities introduced (checked against source entities)
+    
+    Args:
+        sentences: List of {"text": str, "citation": str} dicts
+        valid_source_ids: Set of valid source IDs (paragraph + equation IDs)
+        paragraphs: Original paragraphs for entity checking
+        equations: Original equations for entity checking
+        
+    Returns:
+        Tuple of (passed: bool, reason: str)
+    """
+    if not sentences:
+        return False, "REJECTED: No sentences in composed explanation."
+    
+    # Check each sentence has a citation
+    for i, sent in enumerate(sentences):
+        text = sent.get("text", "")
+        citation = sent.get("citation", "")
+        
+        if not citation:
+            return False, f"REJECTED: Sentence {i+1} lacks a citation: '{text[:50]}...'"
+        
+        if citation not in valid_source_ids:
+            return False, f"REJECTED: Invalid citation '{citation}' not in sources {sorted(valid_source_ids)}."
+    
+    # Build set of allowed entities from sources
+    allowed_entities = set()
+    for para in paragraphs:
+        if para.entities:
+            allowed_entities.update(para.entities.variables)
+            allowed_entities.update(para.entities.concepts)
+        else:
+            # Extract on-the-fly
+            entities = extract_entities_as_model(para.text)
+            allowed_entities.update(entities.variables)
+            allowed_entities.update(entities.concepts)
+    
+    for eq in equations:
+        entities = extract_entities_as_model(eq.equation_text)
+        allowed_entities.update(entities.variables)
+        allowed_entities.update(entities.concepts)
+    
+    # Check for new entities in composed text
+    for sent in sentences:
+        text = sent.get("text", "")
+        sent_entities = extract_entities_as_model(text)
+        
+        # Variables must be from allowed set
+        for var in sent_entities.variables:
+            if var not in allowed_entities:
+                return False, f"REJECTED: New variable '{var}' introduced in composed explanation."
+        
+        # Concepts are more lenient - common words are OK
+        # Only reject if it's a technical concept not in sources
+        TECHNICAL_CONCEPTS = {
+            'attention', 'transformer', 'encoder', 'decoder', 'embedding',
+            'softmax', 'layer normalization', 'dropout', 'residual',
+            'multi-head', 'self-attention', 'cross-attention', 'positional encoding',
+            'feedforward', 'bleu', 'bleu score', 'perplexity', 'accuracy',
+        }
+        for concept in sent_entities.concepts:
+            if concept in TECHNICAL_CONCEPTS and concept not in allowed_entities:
+                return False, f"REJECTED: New technical concept '{concept}' introduced in composed explanation."
+    
+    return True, f"PASSED: Composed explanation verified with {len(sentences)} cited sentences."
+
+
+def composer_node(state: QAState) -> dict:
+    """Compose a grounded explanation from verified evidence.
+    
+    This node:
+    1. Takes verified paragraphs, equations, and linked evidence
+    2. Prompts the LLM to compose an explanation
+    3. Verifies each sentence has a citation
+    4. Verifies no new entities are introduced
+    
+    The composer may ONLY paraphrase existing evidence.
+    It may NOT introduce new entities or claims.
+    
+    Args:
+        state: Current workflow state with paragraphs, equations, linked_evidence
+        
+    Returns:
+        Dict with 'composed_explanation' and 'composer_verification_passed' keys
+    """
+    paragraphs = state.get("paragraphs", [])
+    equations = state.get("equations", [])
+    linked_evidence = state.get("linked_evidence", [])
+    question = state.get("question", "")
+    llm = state.get("llm")
+    
+    # If no evidence, return empty
+    if not paragraphs and not equations:
+        return {
+            "composed_explanation": None,
+            "composer_verification_passed": False,
+        }
+    
+    # Build valid source IDs
+    valid_source_ids = set()
+    for para in paragraphs:
+        valid_source_ids.add(para.paragraph_id)
+    for eq in equations:
+        valid_source_ids.add(eq.equation_id)
+    
+    # Build prompt
+    prompt = build_composer_prompt(paragraphs, equations, linked_evidence, question)
+    
+    # Get LLM response
+    response = llm.generate(prompt)
+    
+    # Parse response
+    parsed = parse_composer_response(response)
+    composed_explanation = parsed.get("composed_explanation", "")
+    sentences = parsed.get("sentences", [])
+    
+    # Verify the composed explanation
+    passed, reason = verify_composed_explanation(
+        sentences, valid_source_ids, paragraphs, equations
+    )
+    
+    # If verification failed, set composed_explanation to None
+    if not passed:
+        return {
+            "composed_explanation": None,
+            "composer_verification_passed": False,
+            "verifier_reason": state.get("verifier_reason", "") + f" Composer: {reason}",
+        }
+    
+    return {
+        "composed_explanation": composed_explanation,
+        "composer_verification_passed": passed,
+        "verifier_reason": state.get("verifier_reason", "") + f" Composer: {reason}",
+    }
+
+
+# =============================================================================
 # Graph Construction
 # =============================================================================
 
 def create_qa_graph() -> StateGraph:
     """Create the Q&A workflow graph.
     
-    The graph has five nodes:
+    The graph has six nodes:
     1. planner: Selects candidate paragraphs via keyword matching
     2. retrieve_paragraphs: Fetches paragraphs from document
     3. explain: Generates answer using LLM
     4. verify: Validates response is grounded in provided paragraphs
     5. evidence_linker: Links related evidence based on shared entities
+    6. composer: Composes grounded explanation from verified evidence
     
-    Flow: START -> planner -> retrieve_paragraphs -> explain -> verify -> evidence_linker -> END
+    Flow: START -> planner -> retrieve_paragraphs -> explain -> verify -> evidence_linker -> composer -> END
     
     Returns:
         Compiled StateGraph ready for execution
@@ -635,14 +921,16 @@ def create_qa_graph() -> StateGraph:
     builder.add_node("explain", explain_node)
     builder.add_node("verify", verifier_node)
     builder.add_node("evidence_linker", evidence_linker_node)
+    builder.add_node("composer", composer_node)
     
-    # Define the flow: planner -> retrieve -> explain -> verify -> evidence_linker -> END
+    # Define the flow: planner -> retrieve -> explain -> verify -> evidence_linker -> composer -> END
     builder.add_edge(START, "planner")
     builder.add_edge("planner", "retrieve_paragraphs")
     builder.add_edge("retrieve_paragraphs", "explain")
     builder.add_edge("explain", "verify")
     builder.add_edge("verify", "evidence_linker")
-    builder.add_edge("evidence_linker", END)
+    builder.add_edge("evidence_linker", "composer")
+    builder.add_edge("composer", END)
     
     # Compile and return
     return builder.compile()

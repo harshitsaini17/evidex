@@ -5,7 +5,7 @@ A system that answers questions ONLY using content from ingested documents,
 with strict citation requirements and no external knowledge.
 """
 
-from evidex.models import Paragraph, Section, Document, Equation, Entities, QAResponse
+from evidex.models import Paragraph, Section, Document, Equation, Entities, Motivation, QAResponse
 from evidex.qa import explain_question
 from evidex.llm import LLMInterface, MockLLM, GroqLLM
 from evidex.graph import (
@@ -16,6 +16,10 @@ from evidex.graph import (
     explain_node,
     verifier_node,
     evidence_linker_node,
+    composer_node,
+    build_composer_prompt,
+    parse_composer_response,
+    verify_composed_explanation,
     create_qa_graph,
     qa_graph,
     explain_question_graph,
@@ -37,6 +41,15 @@ from evidex.entities import (
     get_all_variables,
     get_all_concepts,
 )
+from evidex.motivations import (
+    extract_motivations,
+    extract_motivations_as_list,
+    has_motivation,
+    extract_motivations_for_paragraph,
+    extract_motivations_for_document,
+    search_motivations,
+    get_motivation_summary,
+)
 
 __all__ = [
     # Models
@@ -45,6 +58,7 @@ __all__ = [
     "Document",
     "Equation",
     "Entities",
+    "Motivation",
     "QAResponse",
     # Original Q&A
     "explain_question",
@@ -60,6 +74,10 @@ __all__ = [
     "explain_node",
     "verifier_node",
     "evidence_linker_node",
+    "composer_node",
+    "build_composer_prompt",
+    "parse_composer_response",
+    "verify_composed_explanation",
     "create_qa_graph",
     "qa_graph",
     "explain_question_graph",
@@ -78,4 +96,12 @@ __all__ = [
     "extract_entities_for_document",
     "get_all_variables",
     "get_all_concepts",
+    # Motivation extraction
+    "extract_motivations",
+    "extract_motivations_as_list",
+    "has_motivation",
+    "extract_motivations_for_paragraph",
+    "extract_motivations_for_document",
+    "search_motivations",
+    "get_motivation_summary",
 ]

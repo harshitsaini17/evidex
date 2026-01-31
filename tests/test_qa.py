@@ -223,8 +223,9 @@ class TestExplainQuestion:
         assert result["confidence"] == "low"
         
         # Verify the prompt was constructed correctly
-        assert len(mock_llm.call_history) == 1
-        prompt = mock_llm.call_history[0]
+        # Graph now calls LLM twice: explain node + composer node
+        assert len(mock_llm.call_history) == 2
+        prompt = mock_llm.call_history[0]  # First call is explain
         assert "s1_p1" in prompt
         assert "Neural networks" in prompt
         assert "NEVER use any external knowledge" in prompt
