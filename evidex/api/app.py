@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from evidex.api.routers import health
 from evidex.api import routes
+from evidex.api import doc_routes
 
 
 def create_app() -> FastAPI:
@@ -26,5 +27,6 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(health.router)
     app.include_router(routes.router)
+    app.include_router(doc_routes.router)
     
     return app

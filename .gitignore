@@ -8,6 +8,9 @@ dist/
 build/
 .vscode/
 .idea/
+
+# Uploaded documents storage
+uploaded_pdfs/
 __pycache__/
 *.pyc
 
