@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 
 from evidex.models import Document
@@ -351,6 +352,45 @@ def list_documents() -> list[DocumentListItem]:
         )
         for entry in entries
     ]
+
+
+@router.get("/{document_id}/file")
+def get_document_file(document_id: str) -> FileResponse:
+    """Get the original PDF file for a document.
+    
+    Returns the uploaded PDF file for viewing in the frontend.
+    
+    Args:
+        document_id: The document ID
+        
+    Returns:
+        The PDF file as a response
+        
+    Raises:
+        HTTPException: If document not found or file missing
+    """
+    entry = DOCUMENT_REGISTRY.get(document_id)
+    
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document not found: {document_id}",
+        )
+    
+    file_path = Path(entry.file_path)
+    
+    if not file_path.exists():
+        logger.error("PDF file missing for document %s: %s", document_id, file_path)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"PDF file not found for document: {document_id}",
+        )
+    
+    return FileResponse(
+        path=file_path,
+        media_type="application/pdf",
+        filename=f"{entry.title}.pdf",
+    )
 
 
 @router.get("/{document_id}/sections", response_model=SectionsResponse)
