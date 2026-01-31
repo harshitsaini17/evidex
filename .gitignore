@@ -1,0 +1,15 @@
+.env
+
+*.toml
+.env
+*.log
+.DS_Store
+node_modules/
+dist/
+build/
+.vscode/
+.idea/
+__pycache__/
+*.pyc
+
+evidex.egg-info/
