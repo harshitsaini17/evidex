@@ -1,6 +1,5 @@
 .env
 
-*.toml
 .env
 *.log
 .DS_Store
