@@ -28,10 +28,27 @@ export const apiClient: AxiosInstance = axios.create({
  */
 function extractErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
-    const axiosError = error as AxiosError<{ detail?: string; message?: string }>;
-    if (axiosError.response?.data?.detail) {
-      return axiosError.response.data.detail;
+    const axiosError = error as AxiosError<{
+      detail?: string | Array<{ msg?: string; loc?: string[] }>;
+      message?: string
+    }>;
+
+    const detail = axiosError.response?.data?.detail;
+    if (detail) {
+      // Handle string detail
+      if (typeof detail === 'string') {
+        return detail;
+      }
+      // Handle FastAPI validation error format (array of {msg, loc})
+      if (Array.isArray(detail) && detail.length > 0) {
+        const firstError = detail[0];
+        if (firstError.msg) {
+          const location = firstError.loc?.join('.') || '';
+          return location ? `${location}: ${firstError.msg}` : firstError.msg;
+        }
+      }
     }
+
     if (axiosError.response?.data?.message) {
       return axiosError.response.data.message;
     }

@@ -29,6 +29,7 @@ export interface Paragraph {
 export interface ExplainRequest {
   question: string;
   paragraph_ids?: string[];
+  context_text?: string; // Selected text as context
   include_debug?: boolean;
 }
 
@@ -44,3 +45,23 @@ export interface ExplainResponse {
   confidence: "high" | "low";
   debug?: ExplainResponseDebug;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Selection Types for PDF Context
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface TextSelection {
+  type: 'text';
+  text: string;
+  page: number;
+}
+
+export interface RectSelection {
+  type: 'rect';
+  page: number;
+  bbox: { x: number; y: number; width: number; height: number };
+  extractedText?: string; // Text extracted from the region
+}
+
+export type ContextSelection = TextSelection | RectSelection;
+

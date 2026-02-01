@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import clsx from "clsx";
 import { explainDocument } from "@/lib/api";
-import { ExplainRequest, ExplainResponse } from "@/lib/types";
+import { ExplainRequest, ExplainResponse, ContextSelection } from "@/lib/types";
 import AnswerCard from "./AnswerCard";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -12,6 +12,12 @@ import AnswerCard from "./AnswerCard";
 
 export interface QuestionPanelProps {
   documentId: string;
+  /** Selected context from PDF viewer */
+  selectedContext?: ContextSelection[];
+  /** Callback to clear a specific selection */
+  onClearSelection?: (index: number) => void;
+  /** Callback to clear all selections */
+  onClearAllSelections?: () => void;
   onShowAnswer?: (response: ExplainResponse) => void;
   onCitationClick?: (citationId: string) => void;
   className?: string;
@@ -64,6 +70,69 @@ function Toast({ message, type, onDismiss }: ToastProps) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Context Badge Component
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ContextBadgeProps {
+  selection: ContextSelection;
+  index: number;
+  onRemove: () => void;
+}
+
+function ContextBadge({ selection, index, onRemove }: ContextBadgeProps) {
+  const text = selection.type === 'text'
+    ? selection.text
+    : selection.extractedText || 'Region selected';
+
+  const truncatedText = text.length > 50 ? text.slice(0, 50) + '...' : text;
+
+  return (
+    <div
+      className={clsx(
+        "group flex items-start gap-2 p-2 rounded-lg border transition-colors",
+        selection.type === 'text'
+          ? "bg-blue-50 border-blue-200"
+          : "bg-purple-50 border-purple-200"
+      )}
+    >
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5 mb-1">
+          <span
+            className={clsx(
+              "text-xs font-medium px-1.5 py-0.5 rounded",
+              selection.type === 'text'
+                ? "bg-blue-100 text-blue-700"
+                : "bg-purple-100 text-purple-700"
+            )}
+          >
+            {selection.type === 'text' ? 'Text' : 'Region'}
+          </span>
+          <span className="text-xs text-gray-500">
+            Page {selection.page}
+          </span>
+        </div>
+        <p className="text-xs text-gray-700 line-clamp-2" title={text}>
+          {truncatedText}
+        </p>
+      </div>
+      <button
+        onClick={onRemove}
+        className={clsx(
+          "shrink-0 w-5 h-5 flex items-center justify-center rounded-full",
+          "text-gray-400 hover:text-white transition-colors",
+          selection.type === 'text'
+            ? "hover:bg-blue-500"
+            : "hover:bg-purple-500"
+        )}
+        aria-label={`Remove context ${index + 1}`}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Auto-resize Textarea Hook
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -89,13 +158,15 @@ const MAX_QUESTION_LENGTH = 2000;
 
 export default function QuestionPanel({
   documentId,
+  selectedContext = [],
+  onClearSelection,
+  onClearAllSelections,
   onShowAnswer,
   onCitationClick,
   className,
 }: QuestionPanelProps) {
   // Form state
   const [question, setQuestion] = useState("");
-  const [paragraphIdsInput, setParagraphIdsInput] = useState("");
   const [includeDebug, setIncludeDebug] = useState(false);
 
   // Request state
@@ -118,14 +189,17 @@ export default function QuestionPanel({
   const charCount = questionTrimmed.length;
   const charCountWarning = charCount > MAX_QUESTION_LENGTH * 0.9;
 
-  // Parse paragraph IDs from comma-separated input
-  const parseParagraphIds = useCallback((input: string): string[] => {
-    if (!input.trim()) return [];
-    return input
-      .split(",")
-      .map((id) => id.trim())
-      .filter((id) => id.length > 0);
-  }, []);
+  // Build context text from selections
+  const buildContextText = useCallback((): string => {
+    if (selectedContext.length === 0) return '';
+
+    const contextParts = selectedContext.map((sel, idx) => {
+      const text = sel.type === 'text' ? sel.text : sel.extractedText || '';
+      return `[Context ${idx + 1} from page ${sel.page}]: ${text}`;
+    });
+
+    return contextParts.join('\n\n');
+  }, [selectedContext]);
 
   // Handle form submission
   const handleSubmit = useCallback(
@@ -138,11 +212,11 @@ export default function QuestionPanel({
       setIsLoading(true);
 
       try {
-        // Build request
-        const paragraphIds = parseParagraphIds(paragraphIdsInput);
+        // Build request with context
+        const contextText = buildContextText();
         const payload: ExplainRequest = {
           question: questionTrimmed,
-          ...(paragraphIds.length > 0 && { paragraph_ids: paragraphIds }),
+          ...(contextText && { context_text: contextText }),
           ...(includeDebug && { include_debug: true }),
         };
 
@@ -185,10 +259,9 @@ export default function QuestionPanel({
       isValid,
       isLoading,
       questionTrimmed,
-      paragraphIdsInput,
       includeDebug,
       documentId,
-      parseParagraphIds,
+      buildContextText,
       onShowAnswer,
     ]
   );
@@ -196,7 +269,7 @@ export default function QuestionPanel({
   // Dismiss toast
   const dismissToast = useCallback(() => setToast(null), []);
 
-  // Clear response when question changes significantly
+  // Handle question change
   const handleQuestionChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value;
     if (newValue.length <= MAX_QUESTION_LENGTH + 100) {
@@ -206,6 +279,45 @@ export default function QuestionPanel({
 
   return (
     <div className={clsx("space-y-4", className)}>
+      {/* Selected Context Display */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <label className="block text-sm font-medium text-gray-700">
+            Selected Context
+          </label>
+          {selectedContext.length > 0 && onClearAllSelections && (
+            <button
+              onClick={onClearAllSelections}
+              className="text-xs text-gray-500 hover:text-red-600 transition-colors"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
+
+        {selectedContext.length === 0 ? (
+          <div className="p-3 bg-gray-50 border border-dashed border-gray-300 rounded-lg text-center">
+            <p className="text-sm text-gray-500">
+              No context selected
+            </p>
+            <p className="text-xs text-gray-400 mt-1">
+              Select text or draw a region in the PDF to add context
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2 max-h-40 overflow-y-auto">
+            {selectedContext.map((selection, index) => (
+              <ContextBadge
+                key={index}
+                selection={selection}
+                index={index}
+                onRemove={() => onClearSelection?.(index)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
       <form onSubmit={handleSubmit} className="space-y-3" aria-label="Ask a question about this document">
         {/* Question Textarea */}
         <div>
@@ -242,37 +354,12 @@ export default function QuestionPanel({
               charCount > MAX_QUESTION_LENGTH
                 ? "text-red-600"
                 : charCountWarning
-                ? "text-yellow-600"
-                : "text-gray-400"
+                  ? "text-yellow-600"
+                  : "text-gray-400"
             )}
           >
             {charCount}/{MAX_QUESTION_LENGTH}
           </div>
-        </div>
-
-        {/* Paragraph IDs Input (Optional) */}
-        <div>
-          <label
-            htmlFor="paragraph-ids-input"
-            className="block text-sm font-medium text-gray-700 mb-1"
-          >
-            Paragraph IDs{" "}
-            <span className="font-normal text-gray-500">(optional, comma-separated)</span>
-          </label>
-          <input
-            type="text"
-            id="paragraph-ids-input"
-            value={paragraphIdsInput}
-            onChange={(e) => setParagraphIdsInput(e.target.value)}
-            placeholder="e.g., p1, p2, p3"
-            disabled={isLoading}
-            className={clsx(
-              "w-full px-3 py-2 border rounded-lg text-sm",
-              "focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500",
-              "transition-colors",
-              isLoading && "opacity-50 cursor-not-allowed bg-gray-50"
-            )}
-          />
         </div>
 
         {/* Include Debug Checkbox */}
@@ -347,7 +434,14 @@ export default function QuestionPanel({
               <span>Processing...</span>
             </>
           ) : (
-            "Ask"
+            <>
+              {selectedContext.length > 0 && (
+                <span className="bg-white/20 px-1.5 py-0.5 rounded text-xs">
+                  {selectedContext.length} context{selectedContext.length > 1 ? 's' : ''}
+                </span>
+              )}
+              Ask
+            </>
           )}
         </button>
       </form>

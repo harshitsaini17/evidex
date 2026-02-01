@@ -17,12 +17,14 @@ class ExplainRequest(BaseModel):
         question: The question to answer using the document.
         paragraph_ids: Optional list of paragraph IDs to use as context.
             If not provided, the planner will auto-select paragraphs.
+        context_text: Optional user-selected text from the PDF to use as context.
         include_debug: Whether to include debug information in response.
     """
     model_config = ConfigDict(extra="forbid")
     
     question: str
     paragraph_ids: list[str] | None = None
+    context_text: str | None = None
     include_debug: bool = False
 
 

@@ -263,7 +263,7 @@ class GroqLLM(LLMInterface):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "llama-3.1-8b-instant",
+        model: str = "moonshotai/kimi-k2-instruct",
         temperature: float = 0.0,
         timeout: float | None = None,
     ):

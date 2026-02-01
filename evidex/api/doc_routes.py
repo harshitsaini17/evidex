@@ -97,6 +97,7 @@ class ExplainDocRequest(BaseModel):
     """Request body for document-scoped explain."""
     question: str
     paragraph_ids: list[str] | None = None
+    context_text: str | None = None  # User-selected text context from PDF
     include_debug: bool = False
     
     model_config = ConfigDict(extra="forbid")
@@ -527,10 +528,23 @@ def explain_document_question(
         # If paragraph_ids not provided, pass empty list to trigger planner
         ids_to_use = paragraph_ids if paragraph_ids else []
         
+        # If context_text is provided, integrate it into the question
+        # This allows user-selected text to serve as additional context
+        final_question = question
+        if request.context_text and request.context_text.strip():
+            context_preamble = (
+                "The user has selected the following context from the document. "
+                "Use this context to help answer the question:\n\n"
+                f"--- SELECTED CONTEXT ---\n{request.context_text.strip()}\n--- END CONTEXT ---\n\n"
+                f"Question: {question}"
+            )
+            final_question = context_preamble
+            logger.info("Using user-provided context (%d chars)", len(request.context_text))
+        
         raw_response = explain_question(
             document=document,
             paragraph_ids=ids_to_use,
-            question=question,
+            question=final_question,
             llm=llm,
             include_debug=request.include_debug,
         )
