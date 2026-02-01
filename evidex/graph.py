@@ -5,6 +5,7 @@ This module provides a LangGraph-based workflow that wraps the existing
 explain_question logic. The behavior is IDENTICAL to the original function.
 """
 
+import logging
 from typing import TypedDict
 
 from langgraph.graph import StateGraph, START, END
@@ -13,6 +14,8 @@ from evidex.models import Document, Paragraph, Equation, Entities
 from evidex.llm import LLMInterface, LLMResponse, parse_llm_response
 from evidex.qa import build_context_block, build_prompt, build_equations_block
 from evidex.entities import extract_entities_as_model
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -301,6 +304,11 @@ def explain_node(state: QAState) -> dict:
     
     # Parse and validate response
     parsed = parse_llm_response(response)
+    
+    # Debug logging
+    logger.info(f"LLM raw response: {response.content[:500]}")
+    logger.info(f"Parsed answer: {parsed.get('answer', 'N/A')[:100]}")
+    logger.info(f"Parsed citations: {parsed.get('citations', [])}")
     
     # Validate citations - only include citations that match provided paragraph IDs
     valid_paragraph_ids = {p.paragraph_id for p in paragraphs}

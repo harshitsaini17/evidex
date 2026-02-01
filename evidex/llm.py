@@ -263,7 +263,7 @@ class GroqLLM(LLMInterface):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "llama-3.3-70b-versatile",
+        model: str = "llama-3.1-8b-instant",
         temperature: float = 0.0,
         timeout: float | None = None,
     ):
@@ -271,7 +271,7 @@ class GroqLLM(LLMInterface):
         
         Args:
             api_key: Groq API key (falls back to GROQ_API_KEY env var)
-            model: Model to use (default: llama-3.3-70b-versatile)
+            model: Model to use (default: llama-3.1-8b-instant)
             temperature: Sampling temperature (0.0 for deterministic)
             timeout: Request timeout in seconds (default: None for no timeout)
         """
@@ -346,6 +346,7 @@ class GroqLLM(LLMInterface):
                 "completion_tokens": getattr(response.usage, 'completion_tokens', 0),
                 "total_tokens": getattr(response.usage, 'total_tokens', 0),
             }
+            logger.info(f"Token usage - Prompt: {usage_info['prompt_tokens']}, Completion: {usage_info['completion_tokens']}, Total: {usage_info['total_tokens']}")
         
         return LLMResponse(
             content=content,

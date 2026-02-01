@@ -514,7 +514,7 @@ def explain_document_question(
             llm = MockLLM()
             logger.info("Using MockLLM for development")
         else:
-            llm = GroqLLM(timeout=LLM_TIMEOUT_SECONDS)
+            llm = GroqLLM(timeout=LLM_TIMEOUT_SECONDS, temperature=0.3)
     except ValueError as e:
         logger.error("Failed to initialize LLM: %s", e)
         raise HTTPException(

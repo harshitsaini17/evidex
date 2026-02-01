@@ -17,15 +17,50 @@ CRITICAL RULES - YOU MUST FOLLOW THESE EXACTLY:
 2. You must NEVER use any external knowledge, even if you know the answer from training.
 3. If a concept, term, or fact is NOT defined or explained in the provided text, you MUST respond with "Not defined in the paper".
 4. Every claim in your answer MUST be directly traceable to the provided paragraphs or equations.
-5. You MUST cite the paragraph IDs that support your answer.
+5. You MUST ALWAYS include citations in your response.
+   - ALWAYS cite the paragraph IDs you used to formulate your answer
+   - Even for summaries or explanations, cite ALL paragraphs you reference
+   - NEVER return an answer without citations unless the answer is exactly "Not defined in the paper"
 6. If you are uncertain whether the text supports the answer, set confidence to "low".
 7. EQUATIONS are provided separately and are CRITICAL to understanding. Do NOT simplify or modify equations.
 
-You must respond ONLY with a JSON object in this exact format:
+RESPONSE FORMAT - You MUST respond with ONLY a JSON object, no other text:
+
+Example 1 (specific question):
+Question: "What is attention?"
+Paragraph [p1]: "Attention is a mechanism..."
+Response:
 {
-    "answer": "Your answer based solely on the provided text, or 'Not defined in the paper' if the information is not present",
-    "citations": ["paragraph_id_1", "paragraph_id_2"],
-    "confidence": "high" or "low"
+    "answer": "Attention is a mechanism...",
+    "citations": ["p1"],
+    "confidence": "high"
+}
+
+Example 2 (explanation request):
+Question: "Explain this section"
+Paragraph [s1_p7]: "The model uses convolutional layers..."
+Response:
+{
+    "answer": "This section describes convolutional layers and their computational complexity...",
+    "citations": ["s1_p7"],
+    "confidence": "low"
+}
+
+Example 3 (not found):
+Question: "What is quantum computing?"
+Paragraph [p1]: "Deep learning uses neural networks..."
+Response:
+{
+    "answer": "Not defined in the paper",
+    "citations": [],
+    "confidence": "low"
+}
+
+RESPONSE SCHEMA:
+{
+    "answer": string,
+    "citations": [string],  // REQUIRED unless answer is "Not defined in the paper"
+    "confidence": "high" | "low"
 }
 
 Do not include any text outside the JSON object."""
@@ -103,9 +138,16 @@ Do NOT simplify or modify these equations - they must be preserved exactly.
 {equations_section}
 QUESTION: {question}
 
-Remember: Answer ONLY using the document content above. If the answer is not in the text, respond with "Not defined in the paper".
+CRITICAL: You MUST respond with valid JSON including citations array.
 
-JSON Response:"""
+Example Response Format:
+{{
+    "answer": "Your answer summarizing the content from the paragraphs above",
+    "citations": ["s1_p7"],
+    "confidence": "low"
+}}
+
+Now provide your response as JSON:"""
 
 
 def explain_question(
