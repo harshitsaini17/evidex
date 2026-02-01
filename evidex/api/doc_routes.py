@@ -504,9 +504,17 @@ def explain_document_question(
         if not paragraph_ids:
             paragraph_ids = None
     
-    # Create LLM instance
+    # Create LLM instance (use MockLLM if USE_MOCK_LLM env var is set)
+    import os
+    use_mock = os.environ.get("USE_MOCK_LLM", "").lower() in ("1", "true", "yes")
+    
     try:
-        llm = GroqLLM(timeout=LLM_TIMEOUT_SECONDS)
+        if use_mock:
+            from evidex.llm import MockLLM
+            llm = MockLLM()
+            logger.info("Using MockLLM for development")
+        else:
+            llm = GroqLLM(timeout=LLM_TIMEOUT_SECONDS)
     except ValueError as e:
         logger.error("Failed to initialize LLM: %s", e)
         raise HTTPException(

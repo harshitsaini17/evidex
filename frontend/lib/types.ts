@@ -21,6 +21,7 @@ export interface SectionsResponse {
 export interface Paragraph {
   paragraph_id: string;
   text?: string;
+  section_title?: string;
   page?: number;
   equation_refs?: string[];
 }

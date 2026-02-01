@@ -1,11 +1,8 @@
 "use client";
 
+import { useState, useCallback } from "react";
 import { useParams } from "next/navigation";
-import useSWR from "swr";
 import Link from "next/link";
-import clsx from "clsx";
-import { fetchSections } from "@/lib/api";
-import { SectionSummary } from "@/lib/types";
 import PDFViewer from "@/components/PDFViewer";
 import SectionList from "@/components/SectionList";
 import QuestionPanel from "@/components/QuestionPanel";
@@ -16,58 +13,30 @@ export default function DocumentReaderPage() {
   const params = useParams();
   const documentId = params.id as string;
 
-  // Fetch sections for this document
-  const {
-    data: sections,
-    error: sectionsError,
-    isLoading: sectionsLoading,
-  } = useSWR<SectionSummary[]>(
-    documentId ? `/documents/${documentId}/sections` : null,
-    () => fetchSections(documentId)
-  );
-
   // PDF file URL
-  // TODO: Confirm backend route for PDF file retrieval
   const pdfUrl = `${API_BASE_URL}/documents/${documentId}/file`;
+
+  // Track highlighted page for PDF viewer
+  const [highlightPage, setHighlightPage] = useState<number | null>(null);
 
   const handlePdfLoadSuccess = (numPages: number) => {
     console.log(`PDF loaded with ${numPages} pages`);
-    // TODO: Could store numPages in state for UI display
   };
 
-  const handleSectionSelect = (section: SectionSummary) => {
-    console.log("Selected section:", section.title);
-    // TODO: Implement scroll to section / highlight paragraphs
-  };
+  // Handle paragraph selection from SectionList
+  const handleParagraphSelect = useCallback((paragraphId: string, page?: number) => {
+    console.log("Selected paragraph:", paragraphId, "page:", page);
+    if (page) {
+      setHighlightPage(page);
+    }
+  }, []);
 
-  const handleAskQuestion = (question: string) => {
-    console.log("Question asked:", question);
-    // TODO: Implement Q&A submission logic
-  };
-
-  // Error state: document or sections not found
-  if (sectionsError) {
-    return (
-      <main className="min-h-screen p-8">
-        <div className="max-w-2xl mx-auto">
-          <div className="p-6 bg-red-50 border border-red-200 rounded-lg">
-            <h1 className="text-xl font-semibold text-red-800">
-              Document Not Found
-            </h1>
-            <p className="mt-2 text-red-700">
-              {sectionsError.message || "Unable to load this document."}
-            </p>
-            <Link
-              href="/documents"
-              className="inline-block mt-4 px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
-            >
-              Back to Documents
-            </Link>
-          </div>
-        </div>
-      </main>
-    );
-  }
+  // Handle citation click from QuestionPanel - scroll to paragraph
+  const handleCitationClick = useCallback((citationId: string) => {
+    console.log("Citation clicked:", citationId);
+    // For now, just log - could scroll to paragraph in future
+    // TODO: Look up paragraph page and scroll PDF viewer
+  }, []);
 
   return (
     <main className="h-screen flex flex-col">
@@ -80,7 +49,9 @@ export default function DocumentReaderPage() {
           >
             ← Back
           </Link>
-          <h1 className="text-lg font-semibold">Document: {documentId}</h1>
+          <h1 className="text-lg font-semibold truncate" title={documentId}>
+            Document: {documentId.slice(0, 8)}...
+          </h1>
         </div>
       </header>
 
@@ -90,6 +61,7 @@ export default function DocumentReaderPage() {
         <section className="w-[70%] border-r flex flex-col bg-gray-50">
           <PDFViewer
             fileUrl={pdfUrl}
+            highlightPage={highlightPage}
             onLoadSuccess={handlePdfLoadSuccess}
             className="flex-1"
           />
@@ -102,21 +74,20 @@ export default function DocumentReaderPage() {
             <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">
               Sections
             </h2>
-            {sectionsLoading ? (
-              <p className="text-sm text-gray-500">Loading sections...</p>
-            ) : (
-              <SectionList
-                sections={sections || []}
-                onSelectSection={handleSectionSelect}
-              />
-            )}
+            <SectionList
+              documentId={documentId}
+              onParagraphSelect={handleParagraphSelect}
+            />
           </div>
 
           {/* Question Panel */}
-          <div className="p-4">
+          <div className="p-4 overflow-y-auto max-h-[50%]">
+            <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">
+              Ask a Question
+            </h2>
             <QuestionPanel
               documentId={documentId}
-              onAsk={handleAskQuestion}
+              onCitationClick={handleCitationClick}
             />
           </div>
         </aside>

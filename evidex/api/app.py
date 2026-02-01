@@ -5,12 +5,16 @@ This module provides the create_app factory function for instantiating
 the Evidex API. Safe to import without side effects.
 """
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from evidex.api.routers import health
 from evidex.api import routes
 from evidex.api import doc_routes
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 def create_app() -> FastAPI:
@@ -43,3 +47,7 @@ def create_app() -> FastAPI:
     app.include_router(doc_routes.router)
     
     return app
+
+
+# Create app instance for uvicorn
+app = create_app()
